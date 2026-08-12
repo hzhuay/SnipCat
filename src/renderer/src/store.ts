@@ -139,12 +139,8 @@ export function reducer(state: State, action: Action): State {
         probeError: null,
         meta: action.meta,
         mediaUrl: action.mediaUrl,
-        // 换文件后旧的吸附结果和计划全部失效
-        segments: state.segments.map((s) => ({
-          ...s,
-          snappedStartSec: undefined,
-          snappedEndSec: undefined,
-        })),
+        // 换新文件后，之前记录的时间段、吸附结果和计划全部清空，从一行空段落开始
+        segments: [newSegment()],
         plan: null,
         job: emptyJob,
       }

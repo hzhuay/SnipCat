@@ -431,12 +431,50 @@ details[open] summary {
 
 /* ── 预览播放器 ────────────────────────── */
 
-.preview-video {
+/* 画面容器：高度由组件按视口高度内联设置，随窗口大小伸缩；视频等比填充不变形 */
+.preview-stage {
   background: #000;
   border-radius: 6px;
-  display: block;
-  max-height: 320px;
+  max-height: 70vh;
+  min-height: 160px;
+  overflow: hidden;
+  position: relative;
   width: 100%;
+}
+
+.preview-video {
+  display: block;
+  height: 100%;
+  object-fit: contain;
+  width: 100%;
+}
+
+/* 画面右下角的缩放控件：半透明浮层，不遮挡播放操作 */
+.preview-zoom {
+  align-items: center;
+  background: #000a;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  bottom: 8px;
+  color: var(--text-dim);
+  display: flex;
+  font-size: 12px;
+  gap: 2px;
+  padding: 2px 6px;
+  position: absolute;
+  right: 8px;
+  z-index: 2;
+}
+
+.preview-zoom button.icon {
+  font-size: 14px;
+  padding: 2px 6px;
+}
+
+.preview-zoom-value {
+  font-variant-numeric: tabular-nums;
+  min-width: 40px;
+  text-align: center;
 }
 
 .preview-fallback {

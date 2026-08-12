@@ -13,22 +13,20 @@ function seg(id: string, startRaw: string, endRaw: string): Segment {
   }
 }
 
-describe('resolveEnterAction — 补终点（优先级最高）', () => {
+describe('resolveEnterAction — 补终点 / 修正起点（优先级最高）', () => {
   it('存在只有起点的段落且当前位置在其后 → 设终点', () => {
     const segs = [seg('a', '0:10', '')]
     expect(resolveEnterAction(segs, 20)).toEqual({ kind: 'setEnd', segmentId: 'a' })
   })
 
-  it('当前位置在起点之前 → 无效操作，不做任何改动', () => {
+  it('当前位置在起点之前 → 更新该段起点到当前位置', () => {
     const segs = [seg('a', '0:30', '')]
-    const r = resolveEnterAction(segs, 10)
-    expect(r.kind).toBe('invalid')
-    if (r.kind === 'invalid') expect(r.reason).toContain('起点之前')
+    expect(resolveEnterAction(segs, 10)).toEqual({ kind: 'setStart', segmentId: 'a' })
   })
 
-  it('当前位置正好等于起点 → 无效（零长度段落无意义）', () => {
+  it('当前位置正好等于起点 → 原地更新起点（无意义但无害）', () => {
     const segs = [seg('a', '0:10', '')]
-    expect(resolveEnterAction(segs, 10).kind).toBe('invalid')
+    expect(resolveEnterAction(segs, 10)).toEqual({ kind: 'setStart', segmentId: 'a' })
   })
 
   it('有多个待补终点的段落时取最后一个（用户通常在标最新的）', () => {
@@ -41,10 +39,10 @@ describe('resolveEnterAction — 补终点（优先级最高）', () => {
     expect(resolveEnterAction(segs, 20)).toEqual({ kind: 'setEnd', segmentId: 'a' })
   })
 
-  it('待补段落位置不合法时，即使有空行也报无效', () => {
+  it('待补段落起点在前、空行在后时，也先更新待补段的起点', () => {
     // 有半截的段落挂着，就该先解决它，而不是绕过去用空行
     const segs = [seg('a', '0:30', ''), seg('b', '', '')]
-    expect(resolveEnterAction(segs, 10).kind).toBe('invalid')
+    expect(resolveEnterAction(segs, 10)).toEqual({ kind: 'setStart', segmentId: 'a' })
   })
 
   it('起点非法（无法解析）的段落不算待补', () => {
@@ -102,5 +100,15 @@ describe('resolveEnterAction — 连续按回车的完整流程', () => {
     // 新段起点已填，第四次回车在 40s → 补终点
     segs = [seg('a', '0:10', '0:20'), seg('b', '0:30', '')]
     expect(resolveEnterAction(segs, 40)).toEqual({ kind: 'setEnd', segmentId: 'b' })
+  })
+
+  it('起点标晚后回到它之前按回车 → 修正起点，再按回车 → 补终点', () => {
+    // 起点标在 30s
+    let segs: Segment[] = [seg('a', '0:30', '')]
+    // 播放头回到 10s（早于起点）按回车 → 起点改为 10s，而不是报错
+    expect(resolveEnterAction(segs, 10)).toEqual({ kind: 'setStart', segmentId: 'a' })
+    segs = [seg('a', '0:10', '')]
+    // 播放头到 20s 再按回车 → 正常补终点
+    expect(resolveEnterAction(segs, 20)).toEqual({ kind: 'setEnd', segmentId: 'a' })
   })
 })

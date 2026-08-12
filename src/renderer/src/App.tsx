@@ -22,8 +22,6 @@ export function App() {
   const { env, meta, segments, mode, suffix, dryRun, job, plan } = state
   const previewRef = useRef<PreviewHandle>(null)
   const [canPlay, setCanPlay] = useState(false)
-  /** 短暂的操作提示（如回车无效的原因） */
-  const [hint, setHint] = useState<string | null>(null)
 
   const envReady = Boolean(env?.ffmpeg && env?.ffprobe)
   const running = job.jobId !== null && !job.result && !job.error && !job.canceled
@@ -137,8 +135,9 @@ export function App() {
   /**
    * 回车键：智能判定设起点还是终点。
    *
-   * 判定规则在 shared/interaction.ts 里（纯函数，已单测）：有半截的段落时优先
-   * 补终点，且当前位置必须在其起点之后；都完整了就开始标新的一段。
+   * 判定规则在 shared/interaction.ts 里（纯函数，已单测）：有半截的段落时，
+   * 播放头在其起点之后则补终点，在起点上或之前则把起点挪到当前位置；
+   * 都完整了就开始标新的一段。
    */
   const handleEnter = useCallback(
     (sec: number) => {
@@ -148,31 +147,17 @@ export function App() {
       switch (action.kind) {
         case 'setEnd':
           dispatch({ type: 'seg/edit', id: action.segmentId, field: 'endRaw', value })
-          setHint(null)
           break
         case 'setStart':
           dispatch({ type: 'seg/edit', id: action.segmentId, field: 'startRaw', value })
-          setHint(null)
           break
         case 'addWithStart':
           dispatch({ type: 'seg/addWith', startRaw: value })
-          setHint(null)
-          break
-        case 'invalid':
-          // 无效操作不改动任何数据，只给一条会自动消失的提示
-          setHint(action.reason)
           break
       }
     },
     [segments, dispatch]
   )
-
-  // 提示 2.5 秒后自动消失
-  useEffect(() => {
-    if (!hint) return
-    const t = setTimeout(() => setHint(null), 2500)
-    return () => clearTimeout(t)
-  }, [hint])
 
   /**
    * 时间轴上拖动段落边界。
@@ -294,8 +279,6 @@ export function App() {
             onEdgeDragEnd={() => dispatch({ type: 'plan/clear' })}
             onAvailabilityChange={setCanPlay}
           />
-
-          {hint && <div className="hint-bar">{hint}</div>}
 
           <SegmentList
             meta={meta}

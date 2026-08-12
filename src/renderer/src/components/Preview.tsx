@@ -15,6 +15,10 @@ import { Timeline } from './Timeline'
 const ARROW_STEP_SEC = 3
 /** 按住 Shift 时的大步长，用于快速浏览长视频 */
 const ARROW_STEP_LARGE_SEC = 10
+/** 画面缩放：步进与边界。默认 100%，画面本身随窗口大小自动伸缩 */
+const ZOOM_STEP = 0.25
+const ZOOM_MIN = 0.5
+const ZOOM_MAX = 1.5
 
 export interface PreviewHandle {
   /** 跳到指定时间并开始播放 */
@@ -57,6 +61,8 @@ export const Preview = forwardRef<PreviewHandle, Props>(function Preview(props, 
   const [failed, setFailed] = useState(false)
   const [playing, setPlaying] = useState(false)
   const [scrubbing, setScrubbing] = useState(false)
+  /** 画面缩放系数（0.5–1.5，默认 1）。基础高度随窗口视口联动，这个系数在基础高度上再缩放 */
+  const [zoom, setZoom] = useState(1)
 
   const duration = meta.durationSec
   const frameStep = frameDuration(meta)
@@ -161,21 +167,64 @@ export const Preview = forwardRef<PreviewHandle, Props>(function Preview(props, 
     <div className="panel">
       <div className="panel-title">预览</div>
 
-      <video
-        className="preview-video"
-        ref={videoRef}
-        src={mediaUrl ?? undefined}
-        preload="metadata"
-        onError={() => setFailed(true)}
-        onTimeUpdate={(e) => {
-          // 拖动期间由拖动逻辑主导位置，忽略播放器自己的时间更新避免抖动
-          if (!scrubbing) setCurrent(e.currentTarget.currentTime)
-        }}
-        onSeeked={(e) => setCurrent(e.currentTarget.currentTime)}
-        onPlay={() => setPlaying(true)}
-        onPause={() => setPlaying(false)}
-        onClick={togglePlay}
-      />
+      {/*
+        画面随窗口伸缩：容器高度按视口高度（100vh）换算，宽度铺满面板，
+        因此窗口拉大画面变大、窗口缩小画面变小。真实视频靠 object-fit: contain
+        等比缩放填进容器，不拉伸变形。
+      */}
+      <div
+        className="preview-stage"
+        style={{ height: `calc((100vh - 280px) * ${zoom})` }}
+      >
+        <video
+          className="preview-video"
+          ref={videoRef}
+          src={mediaUrl ?? undefined}
+          preload="metadata"
+          onError={() => setFailed(true)}
+          onTimeUpdate={(e) => {
+            // 拖动期间由拖动逻辑主导位置，忽略播放器自己的时间更新避免抖动
+            if (!scrubbing) setCurrent(e.currentTarget.currentTime)
+          }}
+          onSeeked={(e) => setCurrent(e.currentTarget.currentTime)}
+          onPlay={() => setPlaying(true)}
+          onPause={() => setPlaying(false)}
+          onClick={togglePlay}
+        />
+
+        {/* 画面大小调节：缩小 / 放大 / 恢复默认，浮在画面右下角 */}
+        <div className="preview-zoom">
+          <button
+            className="icon"
+            onClick={() =>
+              setZoom((z) => Math.max(ZOOM_MIN, +(z - ZOOM_STEP).toFixed(2)))
+            }
+            disabled={zoom <= ZOOM_MIN}
+            title="缩小画面"
+          >
+            −
+          </button>
+          <span className="preview-zoom-value">{Math.round(zoom * 100)}%</span>
+          <button
+            className="icon"
+            onClick={() =>
+              setZoom((z) => Math.min(ZOOM_MAX, +(z + ZOOM_STEP).toFixed(2)))
+            }
+            disabled={zoom >= ZOOM_MAX}
+            title="放大画面"
+          >
+            +
+          </button>
+          <button
+            className="icon"
+            onClick={() => setZoom(1)}
+            disabled={zoom === 1}
+            title="恢复默认大小"
+          >
+            适应
+          </button>
+        </div>
+      </div>
 
       <Timeline
         durationSec={duration}
@@ -218,6 +267,8 @@ export const Preview = forwardRef<PreviewHandle, Props>(function Preview(props, 
         ← → 跳转 3 秒（Shift 为 10 秒）· 空格 播放/暂停 · 回车 智能打点（先起点再终点）
         <br />
         时间轴：拖动空白处移动播放头，拖动段落两端的竖线可改起点/终点
+        <br />
+        画面：随窗口大小自动伸缩，右下角 − / + 可手动调节大小
       </div>
     </div>
   )

@@ -12,12 +12,10 @@ import { floorToMs, nudgeAboveMs } from './time'
 export type EnterAction =
   /** 给某个已有起点的段落补上终点 */
   | { kind: 'setEnd'; segmentId: string }
-  /** 填入某个空行的起点 */
+  /** 填入（或更新）某个段落的起点 */
   | { kind: 'setStart'; segmentId: string }
   /** 新建一段并填入起点 */
   | { kind: 'addWithStart' }
-  /** 无效操作，附带原因用于提示 */
-  | { kind: 'invalid'; reason: string }
 
 /**
  * 一段的吸附展示信息。
@@ -78,8 +76,9 @@ export function snapDisplay(seg: Segment, frameDurationSec: number): SnapDisplay
  * 判定回车键该做什么。
  *
  * 规则（按优先级）：
- * 1. 存在「只有起点、缺终点」的段落时，优先补终点 —— 但当前位置必须在该起点
- *    之后才构成合法区间；否则视为无效操作，不做任何改动。
+ * 1. 存在「只有起点、缺终点」的段落时，优先处理它，不再有「报错」的情况：
+ *    - 当前位置在该起点之后 → 补上终点；
+ *    - 当前位置在起点上或之前 → 把起点挪到当前位置，重新标起点。
  *    这条优先级最高：有半截的段落挂着时，不该悄悄去开新的一段。
  * 2. 所有段落都完整时，视为要开始标一个新段：填进空行，或新建一行。
  *
@@ -96,10 +95,8 @@ export function resolveEnterAction(segments: Segment[], currentSec: number): Ent
     if (currentSec > (pending.startSec as number)) {
       return { kind: 'setEnd', segmentId: pending.id }
     }
-    return {
-      kind: 'invalid',
-      reason: '当前位置在未完成段落的起点之前，无法作为终点',
-    }
+    // 播放头在起点上或之前：更新起点到当前位置，而不是报错
+    return { kind: 'setStart', segmentId: pending.id }
   }
 
   // 所有段落都完整（或为空行），开始标新的一段

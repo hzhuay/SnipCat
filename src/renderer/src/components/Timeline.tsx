@@ -164,6 +164,16 @@ export function Timeline(props: Props) {
       onMouseLeave={() => setHoverSec(null)}
     >
       {segments.map((s) => {
+        // 只有起点、还没设终点的段落：在起点位置留一个标记，样式与配对段落的边界一致
+        if (s.startSec !== null && s.endSec === null) {
+          return (
+            <span
+              key={s.id}
+              className="timeline-handle start"
+              style={{ left: pct(s.startSec) }}
+            />
+          )
+        }
         if (s.startSec === null || s.endSec === null || s.endSec <= s.startSec) return null
         const end = Math.min(s.endSec, durationSec)
         const active =
