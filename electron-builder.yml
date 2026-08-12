@@ -1,0 +1,36 @@
+appId: com.hzhuay.snipcat
+productName: SnipCat
+directories:
+  output: release
+  buildResources: build
+
+files:
+  - out/**
+  - package.json
+
+# 不打包 ffmpeg：按方案约定从系统 PATH 取
+asarUnpack: []
+
+win:
+  # portable 是单个免安装 exe，自己用最省事；nsis 是带卸载器的安装包
+  target:
+    - target: portable
+      arch: [x64]
+    - target: nsis
+      arch: [x64]
+  artifactName: ${productName}-${version}-${arch}.${ext}
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+
+mac:
+  target:
+    - target: dmg
+      arch: [arm64]
+  category: public.app-category.video
+
+# 不做代码签名（自用工具）；Windows 首次运行可能有 SmartScreen 提示
+forceCodeSigning: false

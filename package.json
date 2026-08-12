@@ -1,0 +1,41 @@
+{
+  "name": "snipcat",
+  "version": "1.0.0",
+  "description": "按时间段无损切分视频并拼接的桌面工具，编码参数与原视频保持一致",
+  "main": "./out/main/index.js",
+  "author": "hzhuay",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hzhuay/SnipCat.git"
+  },
+  "homepage": "https://github.com/hzhuay/SnipCat",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "npm run typecheck && electron-vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "preview": "electron-vite preview",
+    "build:win": "npm run build && electron-builder --win",
+    "build:mac": "npm run build && electron-builder --mac",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "commands": "esbuild scripts/print-commands.mjs --bundle --platform=node --format=esm --outfile=out/tools/print-commands.mjs --log-level=warning && node out/tools/print-commands.mjs"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4",
+    "@vitejs/plugin-react": "5.2.0",
+    "electron": "43.4.0",
+    "electron-builder": "26.15.3",
+    "electron-vite": "5.0.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "typescript": "5.9.3",
+    "vite": "7.3.6",
+    "vitest": "4.1.10"
+  }
+}

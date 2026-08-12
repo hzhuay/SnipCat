@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <!--
+      media: 是本地视频预览用的自定义协议（见 src/main/mediaProtocol.ts）。
+      connect-src 放开 ws: 是 vite 开发模式的 HMR 需要；生产构建不会用到。
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; media-src 'self' media:; img-src 'self' data:; connect-src 'self' ws: http://localhost:*"
+    />
+    <title>SnipCat</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
