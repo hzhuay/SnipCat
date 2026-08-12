@@ -17,7 +17,7 @@ jobs:
 
       - run: npm ci
 
-      - run: npm run build:win
+      - run: npm run build:win -- --publish never
 
       - uses: softprops/action-gh-release@v2
         with:
