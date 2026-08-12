@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import { buildOutputPath } from '@shared/commands'
 import { formatTime } from '@shared/time'
 import { resolveEnterAction } from '@shared/interaction'
@@ -22,6 +22,10 @@ export function App() {
   const { env, meta, segments, mode, suffix, dryRun, job, plan } = state
   const previewRef = useRef<PreviewHandle>(null)
   const [canPlay, setCanPlay] = useState(false)
+  /** 全页面拖放：正在拖入文件时的遮罩提示与失败原因 */
+  const dragDepth = useRef(0)
+  const [dragging, setDragging] = useState(false)
+  const [dropError, setDropError] = useState<string | null>(null)
 
   const envReady = Boolean(env?.ffmpeg && env?.ffprobe)
   const running = job.jobId !== null && !job.result && !job.error && !job.canceled
@@ -106,6 +110,49 @@ export function App() {
     const p = await window.api.pickVideo()
     if (p) await loadFile(p)
   }, [loadFile])
+
+  /**
+   * 全页面拖放：不再限制在专门的拖放区，窗口任意位置拖入视频都能导入。
+   * 用 dragenter/dragleave 计数，避免在子元素之间移动时遮罩闪烁。
+   */
+  const handleDragEnter = (e: DragEvent) => {
+    if (!e.dataTransfer.types.includes('Files')) return
+    e.preventDefault()
+    dragDepth.current += 1
+    setDragging(true)
+  }
+
+  const handleDragOver = (e: DragEvent) => {
+    if (!e.dataTransfer.types.includes('Files')) return
+    // 必须 preventDefault，否则浏览器默认行为不允许 drop
+    e.preventDefault()
+  }
+
+  const handleDragLeave = () => {
+    dragDepth.current = Math.max(0, dragDepth.current - 1)
+    if (dragDepth.current === 0) setDragging(false)
+  }
+
+  const handleDrop = (e: DragEvent) => {
+    e.preventDefault()
+    dragDepth.current = 0
+    setDragging(false)
+    if (running || state.probing) return
+
+    const file = e.dataTransfer.files[0]
+    if (!file) {
+      setDropError('没有识别到文件，请直接拖入一个视频文件')
+      return
+    }
+    const path = window.api.pathForFile(file)
+    if (!path) {
+      // 拖入的可能不是真实磁盘文件（如浏览器里的图片、压缩包内的条目）
+      setDropError(`无法获取「${file.name}」的磁盘路径，请改用「选择文件」`)
+      return
+    }
+    setDropError(null)
+    void loadFile(path)
+  }
 
   /** 「设为起点」：写入最后一个起点为空的段落，没有则新建一段 */
   const setStartFromPlayhead = useCallback(
@@ -239,7 +286,13 @@ export function App() {
     canRun(segments, meta, validation)
 
   return (
-    <div className="app">
+    <div
+      className="app"
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
       <EnvBanner
         env={env}
         onRecheck={() =>
@@ -251,7 +304,6 @@ export function App() {
         hasFile={meta !== null}
         disabled={running || state.probing}
         onPick={() => void pickFile()}
-        onDropFile={(p) => void loadFile(p)}
       />
 
       {state.probing && <div className="panel dim">正在读取元数据…</div>}
@@ -260,6 +312,13 @@ export function App() {
         <div className="panel">
           <span className="status-error">✗ </span>
           <span>{state.probeError}</span>
+        </div>
+      )}
+
+      {dropError && (
+        <div className="panel">
+          <span className="status-error">✗ </span>
+          <span>{dropError}</span>
         </div>
       )}
 
@@ -336,6 +395,12 @@ export function App() {
             </div>
           )}
         </>
+      )}
+
+      {dragging && (
+        <div className="drop-overlay">
+          <span>松开以导入视频</span>
+        </div>
       )}
     </div>
   )

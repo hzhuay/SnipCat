@@ -1,6 +1,6 @@
 {
   "name": "snipcat",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "按时间段无损切分视频并拼接的桌面工具，编码参数与原视频保持一致",
   "main": "./out/main/index.js",
   "author": "hzhuay",

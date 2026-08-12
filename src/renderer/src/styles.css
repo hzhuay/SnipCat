@@ -195,11 +195,31 @@ a {
 }
 
 .dropzone.compact {
-  padding: 14px 16px;
+  align-items: center;
+  flex-direction: row;
+  justify-content: flex-start;
+  padding: 12px 16px;
 }
 
 .dropzone-hint {
   color: var(--text-dim);
+}
+
+/* 全页面拖入视频时的遮罩提示：pointer-events 置空不挡任何操作 */
+.drop-overlay {
+  align-items: center;
+  background: #5b8def12;
+  border: 2px dashed var(--accent);
+  border-radius: var(--radius);
+  color: var(--accent);
+  display: flex;
+  font-size: 15px;
+  font-weight: 600;
+  inset: 12px;
+  justify-content: center;
+  pointer-events: none;
+  position: fixed;
+  z-index: 100;
 }
 
 /* ── 元数据 ───────────────────────────── */
