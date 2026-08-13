@@ -339,11 +339,13 @@ describe('buildCutCommand — 压缩模式', () => {
     expect(c.argv.indexOf('-c')).toBe(-1)
   })
 
-  it('视频用 libsvtav1 + CRF + preset', () => {
+  it('视频用 libsvtav1 + VBR 目标码率（源码率×0.90）+ preset，不再用 CRF', () => {
+    // h264 fixture 的视频流码率 5,000,000 → 目标 = 5000000 × 0.90 = 4,500,000
     expect(flagValue(c.argv, '-c:v')).toBe('libsvtav1')
-    expect(flagValue(c.argv, '-crf')).toBe('28')
+    expect(flagValue(c.argv, '-b:v')).toBe('4500000')
     expect(flagValue(c.argv, '-preset')).toBe('8')
     expect(flagValue(c.argv, '-pix_fmt')).toBe('yuv420p10le')
+    expect(c.argv).not.toContain('-crf')
   })
 
   it('音频直接复制，不重编码', () => {
@@ -351,10 +353,16 @@ describe('buildCutCommand — 压缩模式', () => {
     expect(c.argv).not.toContain('-b:a')
   })
 
-  it('不复刻原视频的编码参数（与精确模式的关键区别）', () => {
+  it('不复刻 profile/level（只锚定码率上限，不复刻具体编码参数）', () => {
     expect(c.argv).not.toContain('-profile:v')
     expect(c.argv).not.toContain('-level')
-    expect(c.argv).not.toContain('-b:v')
+  })
+
+  it('源码率探测不到时回退 CRF 质量档', () => {
+    const noBr = { ...meta, streams: meta.streams.map((s) => ({ ...s, bitRate: undefined })) }
+    const c2 = buildCutCommand(noBr, seg(10, 20), 'compress', 'svtav1', '/tmp/x/seg_000.mp4', 'x')
+    expect(flagValue(c2.argv, '-crf')).toBe('28')
+    expect(c2.argv).not.toContain('-b:v')
   })
 
   it('无字幕轨时不加 -c:s', () => {
@@ -375,15 +383,24 @@ describe('buildCutCommand — 压缩模式', () => {
 describe('buildCutCommand — 压缩模式硬件编码器（amf）', () => {
   const meta = h264Meta()
 
-  it('用 av1_amf + CQP 锁定量化档位', () => {
+  it('用 av1_amf + vbr_peak + 目标码率（源码率×0.90）', () => {
     const c = buildCutCommand(meta, seg(13, 90), 'compress', 'amf', '/tmp/x/seg_000.mp4', 'x')
     expect(flagValue(c.argv, '-c:v')).toBe('av1_amf')
+    expect(flagValue(c.argv, '-rc')).toBe('vbr_peak')
+    expect(flagValue(c.argv, '-b:v')).toBe('4500000')
+    expect(flagValue(c.argv, '-quality')).toBe('quality')
+    expect(flagValue(c.argv, '-pix_fmt')).toBe('yuv420p')
+  })
+
+  it('源码率探测不到时回退 CQP 质量档', () => {
+    const noBr = { ...meta, streams: meta.streams.map((s) => ({ ...s, bitRate: undefined })) }
+    const c = buildCutCommand(noBr, seg(13, 90), 'compress', 'amf', '/tmp/x/seg_000.mp4', 'x')
     expect(flagValue(c.argv, '-rc')).toBe('cqp')
     expect(flagValue(c.argv, '-min_qp_i')).toBe('26')
     expect(flagValue(c.argv, '-max_qp_i')).toBe('26')
     expect(flagValue(c.argv, '-min_qp_p')).toBe('26')
     expect(flagValue(c.argv, '-max_qp_p')).toBe('26')
-    expect(flagValue(c.argv, '-pix_fmt')).toBe('yuv420p')
+    expect(c.argv).not.toContain('-b:v')
   })
 
   it('不出现软件编码器的参数', () => {

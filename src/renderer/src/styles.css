@@ -33,11 +33,20 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-.app {
+/* 外层壳：菜单栏固定在顶部不随内容滚动，拖拽事件挂在它上面覆盖全窗口 */
+.app-shell {
   display: flex;
   flex-direction: column;
-  gap: 12px;
   height: 100%;
+}
+
+/* 内容区：唯一滚动容器，菜单栏不在其中所以始终可见 */
+.app {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
   overflow-y: auto;
   padding: 16px 20px 24px;
 }

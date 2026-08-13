@@ -16,7 +16,21 @@ import { toFFmpegTime } from './time'
 /** 需要 +faststart 的容器扩展名（把 moov box 移到文件头，便于快速起播） */
 const FASTSTART_EXTS = new Set(['.mp4', '.m4v', '.mov', '.m4a'])
 
-/** 压缩模式的 AV1 编码参数：CRF 越低画质越好体积越大，28 是压体积优先的中间值 */
+/**
+ * 压缩模式的目标码率 = 源视频码率 × 0.90。
+ *
+ * 以源码率为锚而不是固定质量档（CRF/CQP）：固定质量档对内容"睁眼瞎"，
+ * 遇上限本身压得狠的低码率源会把输出码率抬到比源还大（曾实测 4 Mbps 源
+ * 压出 7 Mbps）。而码率可测可封顶——AV1 编码效率比 H.264 高 30~40%，在
+ * 等于源码率的码率下画质已 ≥ 源，压到 90% 仍肉眼无损。
+ *
+ * 留 10% 而非更少，是实测 SVT-AV1 的 VBR 在短片/复杂开头会超目标约 5%
+ * （率控收敛需要时间），10% 余量保证输出平均码率稳定 ≤ 源码率这条底线。
+ * 源码率探测不到（N/A）时回退质量档。
+ */
+const SOURCE_BITRATE_RATIO = 0.9
+
+/** 回退质量档（源码率未知时用）：CRF 越低画质越好体积越大，28 是压体积优先的中间值 */
 const COMPRESS_CRF = 28
 /**
  * SVT-AV1 的 preset：0-13，越小越慢越省体积。
@@ -342,10 +356,7 @@ export function buildCutCommand(
   return { label, bin: 'ffmpeg', argv, expectedDurationSec: actualDuration }
 }
 
-/**
- * AMF 硬件 AV1 的 CQP 档位。AMF 的 QP 与 SVT-AV1 的 CRF 不直接可比，
- * 26 大致对应 CRF 28 的量级（可用 28 更小、24 更清晰，按需微调）。
- */
+/** 回退质量档（源码率未知时用）：AMF 的 CQP 档位，26 大致对应 CRF 28 的量级 */
 const AMF_QP = 26
 
 /**
@@ -354,34 +365,57 @@ const AMF_QP = 26
  * 音频不重编码：视频体积通常占绝大部分，音频轨 copy 既省一次编码损失，
  * 也省了音频编码器兼容性判断。字幕轨按需 copy。
  *
+ * 码率策略：能拿到源视频码率时用「源码率 × SOURCE_BITRATE_RATIO」做 VBR
+ * 目标（SVT 用 `-b:v`，AMF 用 `-rc vbr_peak -b:v`），输出平均码率 ≤ 源码率、
+ * 画质因 AV1 效率 ≥ 源；拿不到（N/A）时回退 CRF/CQP 质量档。
+ *
  * - svtav1：软件编码，体积最优。pix_fmt 固定 yuv420p10le：SVT-AV1 在高于
  *   8bit 输入时默认切 10bit 内部处理，显式指定避免输出差异。
  * - amf：AMD 硬件编码（依赖独显），快 10~30 倍，同画质体积略大。
- *   CQP 用 min/max 相同值锁定量化档位；pix_fmt 用 8bit yuv420p（VCN 对 8bit
- *   兼容最好）。
+ *   vbr_peak 是峰限 VBR，目标码率即 `-b:v`；pix_fmt 用 8bit yuv420p（VCN
+ *   对 8bit 兼容最好）。
  */
 function buildCompressEncodeArgs(meta: VideoMeta, encoder: CompressEncoder): string[] {
-  const args =
-    encoder === 'amf'
-      ? [
-          '-c:v', 'av1_amf',
-          '-rc', 'cqp',
-          '-min_qp_i', String(AMF_QP),
-          '-max_qp_i', String(AMF_QP),
-          '-min_qp_p', String(AMF_QP),
-          '-max_qp_p', String(AMF_QP),
-          '-quality', 'quality',
-          '-pix_fmt', 'yuv420p',
-          '-c:a', 'copy',
-        ]
-      : [
-          '-c:v', 'libsvtav1',
-          '-crf', String(COMPRESS_CRF),
-          '-preset', String(COMPRESS_PRESET),
-          '-pix_fmt', 'yuv420p10le',
-          '-c:a', 'copy',
-        ]
+  // 用视频流的码率（不含音频），`-b:v` 控制的正是视频码率
+  const videoBitRate = meta.streams.find((s) => s.codecType === 'video')?.bitRate
+  const targetBitRate =
+    videoBitRate && videoBitRate > 0 ? Math.round(videoBitRate * SOURCE_BITRATE_RATIO) : undefined
 
+  const videoArgs =
+    encoder === 'amf'
+      ? targetBitRate
+        ? [
+            '-c:v', 'av1_amf',
+            '-rc', 'vbr_peak',
+            '-b:v', String(targetBitRate),
+            '-quality', 'quality',
+            '-pix_fmt', 'yuv420p',
+          ]
+        : [
+            '-c:v', 'av1_amf',
+            '-rc', 'cqp',
+            '-min_qp_i', String(AMF_QP),
+            '-max_qp_i', String(AMF_QP),
+            '-min_qp_p', String(AMF_QP),
+            '-max_qp_p', String(AMF_QP),
+            '-quality', 'quality',
+            '-pix_fmt', 'yuv420p',
+          ]
+      : targetBitRate
+        ? [
+            '-c:v', 'libsvtav1',
+            '-b:v', String(targetBitRate),
+            '-preset', String(COMPRESS_PRESET),
+            '-pix_fmt', 'yuv420p10le',
+          ]
+        : [
+            '-c:v', 'libsvtav1',
+            '-crf', String(COMPRESS_CRF),
+            '-preset', String(COMPRESS_PRESET),
+            '-pix_fmt', 'yuv420p10le',
+          ]
+
+  const args = [...videoArgs, '-c:a', 'copy']
   if (meta.streams.some((s) => s.codecType === 'subtitle')) {
     args.push('-c:s', 'copy')
   }

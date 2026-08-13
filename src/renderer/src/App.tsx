@@ -411,7 +411,7 @@ export function App() {
 
   return (
     <div
-      className="app"
+      className="app-shell"
       onDragEnter={handleDragEnter}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
@@ -419,6 +419,7 @@ export function App() {
     >
       <MenuBar view={view} activeTaskCount={activeTaskCount} onSelect={setView} />
 
+      <div className="app">
       {view === 'tasks' && (
         <TaskPanel
           tasks={tasks}
@@ -553,6 +554,7 @@ export function App() {
           <span>松开以导入视频</span>
         </div>
       )}
+      </div>
     </div>
   )
 }
