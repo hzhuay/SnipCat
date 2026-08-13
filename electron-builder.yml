@@ -18,9 +18,12 @@ win:
       arch: [x64]
     - target: nsis
       arch: [x64]
-  artifactName: ${productName}-${version}-${arch}.${ext}
+
+portable:
+  artifactName: ${productName}-${version}-${arch}-portable.${ext}
 
 nsis:
+  artifactName: ${productName}-${version}-${arch}-setup.${ext}
   oneClick: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
