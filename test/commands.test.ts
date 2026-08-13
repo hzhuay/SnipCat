@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   buildProbeCommand,
+  buildFrameProbeCommand,
   buildKeyframeProbeCommand,
   buildSeekLandingCommand,
   parseKeyframeOutput,
@@ -18,6 +19,7 @@ import {
   joinPosix,
 } from '../src/shared/commands'
 import type { VideoMeta } from '../src/shared/types'
+import { DEFAULT_SUFFIX } from '../src/shared/types'
 import { h264Meta, hevcMeta, seg, flagValue } from './helpers'
 
 describe('路径处理', () => {
@@ -68,6 +70,37 @@ describe('关键帧探测', () => {
   it('窗口参数可调（用于扩大窗口重试）', () => {
     const c = buildKeyframeProbeCommand('/videos/demo.mp4', 100, 30, 60)
     expect(flagValue(c.argv, '-read_intervals')).toBe('70%+60')
+  })
+})
+
+describe('DEFAULT_SUFFIX（模式默认后缀）', () => {
+  it('流复制与压缩的默认后缀不同', () => {
+    expect(DEFAULT_SUFFIX.copy).toBe('_cut')
+    expect(DEFAULT_SUFFIX.compress).toBe('_cut_compressed')
+    expect(DEFAULT_SUFFIX.copy).not.toBe(DEFAULT_SUFFIX.compress)
+  })
+})
+
+describe('buildFrameProbeCommand（终点帧边界探测）', () => {
+  it('用绝对终点而不是相对时长，保证窗口覆盖目标时间', () => {
+    const c = buildFrameProbeCommand('/videos/demo.mp4', 13)
+    // 起点向前 2s、终点向后 6s，都是绝对时间；`%` 只吸附起点到关键帧，终点不受影响
+    expect(flagValue(c.argv, '-read_intervals')).toBe('11%19')
+    expect(flagValue(c.argv, '-select_streams')).toBe('v:0')
+    expect(flagValue(c.argv, '-show_entries')).toBe('packet=pts_time')
+    // 读 packet 不读 frame：不需要解码
+    expect(c.argv).toContain('-show_packets')
+    expect(c.argv).not.toContain('-show_frames')
+  })
+
+  it('目标接近 0 时窗口起点不为负', () => {
+    const c = buildFrameProbeCommand('/videos/demo.mp4', 1)
+    expect(flagValue(c.argv, '-read_intervals')).toBe('0%7')
+  })
+
+  it('窗口参数可调（回看与终点余量）', () => {
+    const c = buildFrameProbeCommand('/videos/demo.mp4', 100, 30, 5)
+    expect(flagValue(c.argv, '-read_intervals')).toBe('70%105')
   })
 })
 
@@ -200,6 +233,7 @@ describe('buildCutCommand — 流复制模式', () => {
     meta,
     seg(13, 90, 12.48, 92),
     'copy',
+    'svtav1',
     '/tmp/x/seg_000.mp4',
     '切分第 1/2 段'
   )
@@ -262,13 +296,13 @@ describe('buildCutCommand — 流复制模式', () => {
   })
 
   it('没有吸附结果时终点用原值', () => {
-    const c2 = buildCutCommand(meta, seg(13, 90), 'copy', '/tmp/x/seg_000.mp4', 'x')
+    const c2 = buildCutCommand(meta, seg(13, 90), 'copy', 'svtav1', '/tmp/x/seg_000.mp4', 'x')
     expect(flagValue(c2.argv, '-ss')).toBe('13.000')
     expect(flagValue(c2.argv, '-t')).toBe('77.000')
   })
 
   it('只有起点吸附时终点用原值，-ss 仍是原始起点', () => {
-    const c3 = buildCutCommand(meta, seg(13, 90, 12), 'copy', '/tmp/x/s.mp4', 'x')
+    const c3 = buildCutCommand(meta, seg(13, 90, 12), 'copy', 'svtav1', '/tmp/x/s.mp4', 'x')
     expect(flagValue(c3.argv, '-ss')).toBe('13.000')
     expect(flagValue(c3.argv, '-t')).toBe('77.000')
     // 实际产出从落点 12 开始，所以时长是 78
@@ -293,7 +327,7 @@ describe('buildCutCommand — 流复制模式', () => {
 describe('buildCutCommand — 压缩模式', () => {
   const meta = h264Meta()
   // 压缩模式忽略吸附结果，直接用用户输入的时间，与精确模式一致
-  const c = buildCutCommand(meta, seg(13, 90, 12.48, 92), 'compress', '/tmp/x/seg_000.mp4', 'x')
+  const c = buildCutCommand(meta, seg(13, 90, 12.48, 92), 'compress', 'svtav1', '/tmp/x/seg_000.mp4', 'x')
 
   it('用用户输入的时间，两端都不吸附', () => {
     expect(flagValue(c.argv, '-ss')).toBe('13.000')
@@ -308,7 +342,7 @@ describe('buildCutCommand — 压缩模式', () => {
   it('视频用 libsvtav1 + CRF + preset', () => {
     expect(flagValue(c.argv, '-c:v')).toBe('libsvtav1')
     expect(flagValue(c.argv, '-crf')).toBe('28')
-    expect(flagValue(c.argv, '-preset')).toBe('6')
+    expect(flagValue(c.argv, '-preset')).toBe('8')
     expect(flagValue(c.argv, '-pix_fmt')).toBe('yuv420p10le')
   })
 
@@ -328,13 +362,35 @@ describe('buildCutCommand — 压缩模式', () => {
   })
 
   it('有字幕轨时字幕直接复制', () => {
-    const c2 = buildCutCommand(hevcMeta(), seg(10, 20), 'compress', '/tmp/x/seg_000.mkv', 'x')
+    const c2 = buildCutCommand(hevcMeta(), seg(10, 20), 'compress', 'svtav1', '/tmp/x/seg_000.mkv', 'x')
     expect(flagValue(c2.argv, '-c:s')).toBe('copy')
   })
 
   it('与视频原编码无关，hevc 源同样走 libsvtav1', () => {
-    const c2 = buildCutCommand(hevcMeta(), seg(10, 20), 'compress', '/tmp/x/seg_000.mkv', 'x')
+    const c2 = buildCutCommand(hevcMeta(), seg(10, 20), 'compress', 'svtav1', '/tmp/x/seg_000.mkv', 'x')
     expect(flagValue(c2.argv, '-c:v')).toBe('libsvtav1')
+  })
+})
+
+describe('buildCutCommand — 压缩模式硬件编码器（amf）', () => {
+  const meta = h264Meta()
+
+  it('用 av1_amf + CQP 锁定量化档位', () => {
+    const c = buildCutCommand(meta, seg(13, 90), 'compress', 'amf', '/tmp/x/seg_000.mp4', 'x')
+    expect(flagValue(c.argv, '-c:v')).toBe('av1_amf')
+    expect(flagValue(c.argv, '-rc')).toBe('cqp')
+    expect(flagValue(c.argv, '-min_qp_i')).toBe('26')
+    expect(flagValue(c.argv, '-max_qp_i')).toBe('26')
+    expect(flagValue(c.argv, '-min_qp_p')).toBe('26')
+    expect(flagValue(c.argv, '-max_qp_p')).toBe('26')
+    expect(flagValue(c.argv, '-pix_fmt')).toBe('yuv420p')
+  })
+
+  it('不出现软件编码器的参数', () => {
+    const c = buildCutCommand(meta, seg(13, 90), 'compress', 'amf', '/tmp/x/seg_000.mp4', 'x')
+    expect(c.argv).not.toContain('-crf')
+    expect(c.argv).not.toContain('-preset')
+    expect(flagValue(c.argv, '-c:a')).toBe('copy')
   })
 })
 
@@ -419,7 +475,7 @@ describe('buildJobCommands', () => {
 
   it('多段：N 条切分 + 1 条拼接', () => {
     const segs = [seg(13, 90, 12.48), seg(120, 165, 120), seg(300, 330, 298)]
-    const r = buildJobCommands(meta, segs, 'copy', '/Users/zhuhuanqi/videos/demo_cut.mp4', '/tmp/vc')
+    const r = buildJobCommands(meta, segs, 'copy', 'svtav1', '/Users/zhuhuanqi/videos/demo_cut.mp4', '/tmp/vc')
 
     expect(r.commands).toHaveLength(4)
     expect(r.commands[0].label).toBe('切分第 1/3 段')
@@ -430,30 +486,30 @@ describe('buildJobCommands', () => {
 
   it('临时段落文件用源文件的扩展名（保证容器一致）', () => {
     const segs = [seg(13, 90), seg(120, 165)]
-    const r = buildJobCommands(meta, segs, 'copy', '/videos/demo_cut.mp4', '/tmp/vc')
+    const r = buildJobCommands(meta, segs, 'copy', 'svtav1', '/videos/demo_cut.mp4', '/tmp/vc')
     expect(r.segmentPaths).toEqual(['/tmp/vc/seg_000.mp4', '/tmp/vc/seg_001.mp4'])
   })
 
   it('mkv 源的临时文件也是 mkv', () => {
-    const r = buildJobCommands(hevcMeta(), [seg(10, 20), seg(30, 40)], 'copy', '/videos/x_cut.mkv', '/tmp/vc')
+    const r = buildJobCommands(hevcMeta(), [seg(10, 20), seg(30, 40)], 'copy', 'svtav1', '/videos/x_cut.mkv', '/tmp/vc')
     expect(r.segmentPaths).toEqual(['/tmp/vc/seg_000.mkv', '/tmp/vc/seg_001.mkv'])
   })
 
   it('总时长按吸附后的两端算', () => {
     const segs = [seg(13, 90, 12.48, 92), seg(120, 165, 120, 166)]
-    const r = buildJobCommands(meta, segs, 'copy', '/videos/demo_cut.mp4', '/tmp/vc')
+    const r = buildJobCommands(meta, segs, 'copy', 'svtav1', '/videos/demo_cut.mp4', '/tmp/vc')
     // (92-12.48) + (166-120) = 125.52
     expect(r.totalDurationSec).toBeCloseTo(125.52, 6)
   })
 
   it('最终输出先落在临时目录（避免留下半成品）', () => {
     const segs = [seg(13, 90), seg(120, 165)]
-    const r = buildJobCommands(meta, segs, 'copy', '/videos/demo_cut.mp4', '/tmp/vc')
+    const r = buildJobCommands(meta, segs, 'copy', 'svtav1', '/videos/demo_cut.mp4', '/tmp/vc')
     expect(r.stagedOutput).toBe('/tmp/vc/output.mp4')
   })
 
   it('只有一段时跳过 concat，直接重命名首段', () => {
-    const r = buildJobCommands(meta, [seg(13, 90, 12.48)], 'copy', '/videos/demo_cut.mp4', '/tmp/vc')
+    const r = buildJobCommands(meta, [seg(13, 90, 12.48)], 'copy', 'svtav1', '/videos/demo_cut.mp4', '/tmp/vc')
     expect(r.commands).toHaveLength(1)
     expect(r.needsConcat).toBe(false)
     expect(r.stagedOutput).toBe('/tmp/vc/seg_000.mp4')
@@ -461,7 +517,7 @@ describe('buildJobCommands', () => {
 
   it('concat 列表内容与段落路径一致', () => {
     const segs = [seg(13, 90), seg(120, 165)]
-    const r = buildJobCommands(meta, segs, 'copy', '/videos/demo_cut.mp4', '/tmp/vc')
+    const r = buildJobCommands(meta, segs, 'copy', 'svtav1', '/videos/demo_cut.mp4', '/tmp/vc')
     expect(r.listPath).toBe('/tmp/vc/list.txt')
     expect(r.listContent).toBe("file '/tmp/vc/seg_000.mp4'\nfile '/tmp/vc/seg_001.mp4'\n")
   })
@@ -469,7 +525,7 @@ describe('buildJobCommands', () => {
   it('段落顺序即拼接顺序，不自动按时间排序', () => {
     // 用户可能故意打乱顺序拼接
     const segs = [seg(300, 330), seg(13, 90)]
-    const r = buildJobCommands(meta, segs, 'copy', '/videos/demo_cut.mp4', '/tmp/vc')
+    const r = buildJobCommands(meta, segs, 'copy', 'svtav1', '/videos/demo_cut.mp4', '/tmp/vc')
     expect(flagValue(r.commands[0].argv, '-ss')).toBe('300.000')
     expect(flagValue(r.commands[1].argv, '-ss')).toBe('13.000')
   })
@@ -491,7 +547,7 @@ describe('buildOutputPath', () => {
 
 describe('renderCommandLine', () => {
   it('含空格的参数加引号', () => {
-    const c = buildCutCommand(hevcMeta(), seg(10, 20), 'copy', '/tmp/vc/seg_000.mkv', 'x')
+    const c = buildCutCommand(hevcMeta(), seg(10, 20), 'copy', 'svtav1', '/tmp/vc/seg_000.mkv', 'x')
     const line = renderCommandLine(c)
     expect(line.startsWith('ffmpeg ')).toBe(true)
     expect(line).toContain('"/Users/zhuhuanqi/videos/4k clip\'s.mkv"')

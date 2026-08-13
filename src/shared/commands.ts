@@ -10,7 +10,7 @@
  * 的列表文件里反斜杠会被当作转义符，必须是正斜杠。统一了就不用分情况处理。
  */
 
-import type { CommandSpec, CutMode, Segment, StreamInfo, VideoMeta } from './types'
+import type { CommandSpec, CompressEncoder, CutMode, Segment, StreamInfo, VideoMeta } from './types'
 import { toFFmpegTime } from './time'
 
 /** 需要 +faststart 的容器扩展名（把 moov box 移到文件头，便于快速起播） */
@@ -18,8 +18,12 @@ const FASTSTART_EXTS = new Set(['.mp4', '.m4v', '.mov', '.m4a'])
 
 /** 压缩模式的 AV1 编码参数：CRF 越低画质越好体积越大，28 是压体积优先的中间值 */
 const COMPRESS_CRF = 28
-/** SVT-AV1 的 preset：0-13，越小越慢越省体积，6 是速度与体积的折中 */
-const COMPRESS_PRESET = 6
+/**
+ * SVT-AV1 的 preset：0-13，越小越慢越省体积。
+ * 6 是速度与体积的折中，但对 1 小时以上的长视频太慢（1080p 约 20 分钟）；
+ * 8 提速约一倍、体积只大几个百分点，是长视频性价比最高的档位。
+ */
+const COMPRESS_PRESET = 8
 
 /** 用正斜杠拼接路径片段 */
 export function joinPosix(...parts: string[]): string {
@@ -97,9 +101,16 @@ export function buildFrameProbeCommand(
   inputPath: string,
   aroundSec: number,
   backSec = 2,
-  windowSec = 6
+  afterSec = 6
 ): CommandSpec {
+  // 终点用绝对时间（`from%to` 形式），不能用 `from%+len`（相对时长）。
+  // ffprobe 的 read_intervals 会把窗口起点吸附到 from 前最近的**关键帧**，再按
+  // `+len` 往后数 len 秒 —— 若关键帧离 from 很远（GOP 可达 8s+），窗口就够不到
+  // aroundSec。终点吸附因此漏检并回退到整片时长，导致整段被切到视频结束。
+  // 用绝对终点后窗口必然是 `[关键帧(from), to]`，而关键帧(from) ≤ from <
+  // aroundSec < to，保证覆盖目标时间，与 GOP 大小无关。
   const from = Math.max(0, aroundSec - backSec)
+  const to = aroundSec + afterSec
   return {
     label: `探测 ${toFFmpegTime(aroundSec)}s 附近的帧边界`,
     bin: 'ffprobe',
@@ -109,7 +120,7 @@ export function buildFrameProbeCommand(
       '-show_packets',
       '-show_entries', 'packet=pts_time',
       '-of', 'csv=p=0',
-      '-read_intervals', `${from}%+${windowSec}`,
+      '-read_intervals', `${from}%${to}`,
       toPosixPath(inputPath),
     ],
   }
@@ -289,6 +300,7 @@ export function buildCutCommand(
   meta: VideoMeta,
   seg: Segment,
   mode: CutMode,
+  encoder: CompressEncoder,
   outPath: string,
   label: string
 ): CommandSpec {
@@ -322,7 +334,7 @@ export function buildCutCommand(
   if (isCopy) {
     argv.push('-c', 'copy', '-avoid_negative_ts', 'make_zero')
   } else {
-    argv.push(...buildCompressEncodeArgs(meta))
+    argv.push(...buildCompressEncodeArgs(meta, encoder))
   }
 
   argv.push(toPosixPath(outPath))
@@ -331,22 +343,44 @@ export function buildCutCommand(
 }
 
 /**
- * 压缩模式的编码参数：AV1（libsvtav1）+ CRF 压体积，音频轨直接 copy。
+ * AMF 硬件 AV1 的 CQP 档位。AMF 的 QP 与 SVT-AV1 的 CRF 不直接可比，
+ * 26 大致对应 CRF 28 的量级（可用 28 更小、24 更清晰，按需微调）。
+ */
+const AMF_QP = 26
+
+/**
+ * 压缩模式的编码参数：按编码器分支，音频轨直接 copy。
  *
  * 音频不重编码：视频体积通常占绝大部分，音频轨 copy 既省一次编码损失，
- * 也省了音频编码器兼容性判断。
+ * 也省了音频编码器兼容性判断。字幕轨按需 copy。
  *
- * pix_fmt 固定成 yuv420p10le：SVT-AV1 在高于 8bit 输入时默认切 10bit 内部处理，
- * 显式指定避免不同源文件 bit depth 不一致导致的输出差异；字幕轨仍按需 copy。
+ * - svtav1：软件编码，体积最优。pix_fmt 固定 yuv420p10le：SVT-AV1 在高于
+ *   8bit 输入时默认切 10bit 内部处理，显式指定避免输出差异。
+ * - amf：AMD 硬件编码（依赖独显），快 10~30 倍，同画质体积略大。
+ *   CQP 用 min/max 相同值锁定量化档位；pix_fmt 用 8bit yuv420p（VCN 对 8bit
+ *   兼容最好）。
  */
-function buildCompressEncodeArgs(meta: VideoMeta): string[] {
-  const args = [
-    '-c:v', 'libsvtav1',
-    '-crf', String(COMPRESS_CRF),
-    '-preset', String(COMPRESS_PRESET),
-    '-pix_fmt', 'yuv420p10le',
-    '-c:a', 'copy',
-  ]
+function buildCompressEncodeArgs(meta: VideoMeta, encoder: CompressEncoder): string[] {
+  const args =
+    encoder === 'amf'
+      ? [
+          '-c:v', 'av1_amf',
+          '-rc', 'cqp',
+          '-min_qp_i', String(AMF_QP),
+          '-max_qp_i', String(AMF_QP),
+          '-min_qp_p', String(AMF_QP),
+          '-max_qp_p', String(AMF_QP),
+          '-quality', 'quality',
+          '-pix_fmt', 'yuv420p',
+          '-c:a', 'copy',
+        ]
+      : [
+          '-c:v', 'libsvtav1',
+          '-crf', String(COMPRESS_CRF),
+          '-preset', String(COMPRESS_PRESET),
+          '-pix_fmt', 'yuv420p10le',
+          '-c:a', 'copy',
+        ]
 
   if (meta.streams.some((s) => s.codecType === 'subtitle')) {
     args.push('-c:s', 'copy')
@@ -416,6 +450,7 @@ export function buildJobCommands(
   meta: VideoMeta,
   segments: Segment[],
   mode: CutMode,
+  encoder: CompressEncoder,
   outputPath: string,
   tmpDir: string
 ): {
@@ -437,6 +472,7 @@ export function buildJobCommands(
       meta,
       seg,
       mode,
+      encoder,
       segmentPaths[i],
       `切分第 ${i + 1}/${segments.length} 段`
     )

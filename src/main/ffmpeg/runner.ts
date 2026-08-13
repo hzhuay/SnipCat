@@ -5,8 +5,10 @@
  * 这样含空格、中文、`&`、单引号的路径全部天然安全，不需要任何转义逻辑。
  */
 
-import { spawn, type ChildProcess } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { ProgressParser } from '@shared/progress'
+import { logInfo } from '../log'
+import { resumePid, suspendPid } from './suspend'
 
 /** stderr 保留的尾部行数：ffmpeg 的真实错误几乎总在末尾 */
 const STDERR_TAIL_LINES = 20
@@ -24,14 +26,38 @@ export class CanceledError extends Error {
   }
 }
 
+/** 当前所有受管子进程的 pid，应用退出时统一清理 */
+const managedPids = new Set<number>()
+
 /**
- * 进程句柄，用于取消正在执行的任务。
+ * 杀光所有受管子进程（应用退出清理）。
  *
- * 一个 Job 从头到尾共用一个 handle，内部记录当前活跃的子进程。
+ * 用 spawnSync 同步执行，确保退出前 taskkill 已落地；taskkill /T /F 对挂起
+ * （NtSuspendProcess 冻结）的进程同样有效，无需先恢复。
+ */
+export function killAllManaged(): void {
+  for (const pid of managedPids) {
+    try {
+      spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], { shell: false })
+    } catch {
+      // 单进程失败不影响整体清理
+    }
+  }
+  managedPids.clear()
+}
+
+/**
+ * 进程句柄，用于取消 / 挂起正在执行的任务。
+ *
+ * 一个 Job 从头到尾共用一个 handle，内部记录当前活跃的子进程。挂起（suspend）
+ * 供前台任务抢占后台压缩时用：冻结子进程释放 CPU/磁盘 IO，前台复制完成后恢复。
+ * 挂起是"带标志的"——若抢占发生在两条命令之间（此刻没有子进程），标志位会
+ * 让下一条命令 spawn 出来就立即挂起。
  */
 export class ProcessHandle {
   private current: ChildProcess | null = null
   private canceled = false
+  private suspended = false
 
   attach(child: ChildProcess): void {
     if (this.canceled) {
@@ -39,10 +65,16 @@ export class ProcessHandle {
       killTree(child)
       return
     }
+    managedPids.add(child.pid!)
+    if (this.suspended) {
+      // 挂起发生在两条命令之间：新起的进程立即挂起，不等它先跑起来
+      void suspendPid(child.pid!)
+    }
     this.current = child
   }
 
   detach(): void {
+    if (this.current) managedPids.delete(this.current.pid!)
     this.current = null
   }
 
@@ -53,6 +85,20 @@ export class ProcessHandle {
       killTree(this.current)
       this.current = null
     }
+  }
+
+  /** 冻结当前子进程（尽力而为）。无子进程时只置标志，下一条命令 attach 时立即挂起 */
+  suspend(): Promise<void> {
+    this.suspended = true
+    const pid = this.current?.pid
+    return pid ? suspendPid(pid) : Promise.resolve()
+  }
+
+  /** 恢复当前子进程（尽力而为）。 */
+  resume(): Promise<void> {
+    this.suspended = false
+    const pid = this.current?.pid
+    return pid ? resumePid(pid) : Promise.resolve()
   }
 
   get isCanceled(): boolean {
@@ -179,12 +225,16 @@ export function run(bin: string, argv: string[], opts: RunOptions = {}): Promise
 
 /**
  * 执行命令并要求退出码为 0，否则抛出带 stderr 尾部的错误。
+ *
+ * 每条实际执行的命令都会记入日志（含探测用的 ffprobe 命令），这样用户复制的
+ * 日志里能看到完整调用链，而不只是最终那条 ffmpeg。
  */
 export async function runChecked(
   bin: string,
   argv: string[],
   opts: RunOptions = {}
 ): Promise<RunResult> {
+  logInfo(`$ ${[bin, ...argv].join(' ')}`)
   const r = await run(bin, argv, opts)
   if (r.code !== 0) {
     const err = new FFmpegError(

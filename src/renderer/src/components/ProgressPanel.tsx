@@ -85,13 +85,6 @@ export function ProgressPanel({
           <button onClick={onReset}>关闭</button>
         </div>
       )}
-
-      {job.logs.length > 0 && (running || job.error) && (
-        <details style={{ marginTop: 12 }}>
-          <summary>ffmpeg 日志（{job.logs.length} 行）</summary>
-          <div className="log-box">{job.logs.slice(-80).join('\n')}</div>
-        </details>
-      )}
     </div>
   )
 }

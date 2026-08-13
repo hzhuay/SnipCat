@@ -9,7 +9,7 @@
 import { mkdtempSync, rmSync, writeFileSync, existsSync, renameSync, copyFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { buildJobCommands } from '@shared/commands'
+import { buildJobCommands, renderCommandLine } from '@shared/commands'
 import {
   COPY_WEIGHTS,
   RECODE_WEIGHTS,
@@ -17,6 +17,7 @@ import {
   estimateEta,
 } from '@shared/progress'
 import type { CommandSpec, JobEvent, JobRequest } from '@shared/types'
+import { logError, logInfo } from '../log'
 import { requireBinaries } from './locate'
 import { snapSegments } from './keyframes'
 import { CanceledError, FFmpegError, ProcessHandle, runChecked } from './runner'
@@ -101,6 +102,7 @@ export async function planJob(req: JobRequest): Promise<CommandSpec[]> {
     resolved.input,
     resolved.segments,
     resolved.mode,
+    resolved.encoder,
     resolved.outputPath,
     tmpDir
   )
@@ -113,15 +115,22 @@ export async function planJob(req: JobRequest): Promise<CommandSpec[]> {
  * @param req 已校验的请求（段落均合法、outputPath 已确定）
  * @param handle 用于取消
  * @param emit 事件推送
+ * @param opts.pausedSec 累计被挂起的时间（秒），用于修正 ETA —— 后台压缩被前台
+ *   抢占挂起时，墙钟时间在走而 ffmpeg 没在跑，不减掉这段 ETA 会虚高
  */
 export async function runJob(
   req: JobRequest,
   handle: ProcessHandle,
-  emit: EventSink
+  emit: EventSink,
+  opts: { pausedSec?: () => number } = {}
 ): Promise<void> {
   const startedAt = Date.now()
   const { ffmpeg } = await requireBinaries()
   const tmpDir = makeTmpDir()
+
+  logInfo(
+    `任务开始：${req.outputPath}（模式：${req.mode === 'copy' ? '流复制' : 'AV1 压缩'}，${req.segments.length} 段）`
+  )
 
   try {
     // 切点吸附
@@ -135,6 +144,7 @@ export async function runJob(
       resolved.input,
       resolved.segments,
       resolved.mode,
+      resolved.encoder,
       resolved.outputPath,
       tmpDir
     )
@@ -146,7 +156,8 @@ export async function runJob(
 
     const pushProgress = (currentCut: number, concatSec: number) => {
       const ratio = overallRatio(completedCutSec, currentCut, total, concatSec, weights)
-      const elapsed = (Date.now() - startedAt) / 1000
+      const paused = opts.pausedSec?.() ?? 0
+      const elapsed = (Date.now() - startedAt) / 1000 - paused
       emit({ type: 'progress', ratio, etaSec: estimateEta(elapsed, ratio) })
     }
 
@@ -156,11 +167,12 @@ export async function runJob(
       handle.throwIfCanceled()
       const cmd = plan.commands[i]
       emit({ type: 'stage', stage: 'cut', index: i + 1, total: cutCount })
+      logInfo(`切分第 ${i + 1}/${cutCount} 段：${renderCommandLine(cmd)}`)
 
       await runChecked(ffmpeg, cmd.argv, {
         handle,
         onProgress: (sec) => pushProgress(Math.min(sec, cmd.expectedDurationSec ?? sec), 0),
-        onLog: (line) => emit({ type: 'log', line }),
+        onLog: (line) => logInfo(`[ffmpeg] ${line}`),
       })
 
       completedCutSec += cmd.expectedDurationSec ?? 0
@@ -174,10 +186,11 @@ export async function runJob(
       writeFileSync(plan.listPath, plan.listContent, 'utf8')
 
       const concatCmd = plan.commands[plan.commands.length - 1]
+      logInfo(`拼接 ${cutCount} 段 → ${plan.stagedOutput}：${renderCommandLine(concatCmd)}`)
       await runChecked(ffmpeg, concatCmd.argv, {
         handle,
         onProgress: (sec) => pushProgress(0, sec),
-        onLog: (line) => emit({ type: 'log', line }),
+        onLog: (line) => logInfo(`[ffmpeg] ${line}`),
       })
     }
 
@@ -185,9 +198,11 @@ export async function runJob(
     handle.throwIfCanceled()
     emit({ type: 'stage', stage: 'finalize' })
     if (!existsSync(plan.stagedOutput)) {
+      logError(`ffmpeg 未产出输出文件：${plan.stagedOutput}`)
       throw new Error('ffmpeg 未产出输出文件，请查看日志')
     }
     finalize(plan.stagedOutput, req.outputPath)
+    logInfo(`输出完成：${req.outputPath}`)
 
     emit({ type: 'progress', ratio: 1 })
     emit({
@@ -197,10 +212,13 @@ export async function runJob(
     })
   } catch (e) {
     if (e instanceof CanceledError || handle.isCanceled) {
+      logInfo('任务已取消')
       emit({ type: 'canceled' })
     } else if (e instanceof FFmpegError) {
+      logError(`任务失败：${e.message}`)
       emit({ type: 'error', message: e.message, stderrTail: e.stderrTail })
     } else {
+      logError(`任务失败：${(e as Error).message}`)
       emit({ type: 'error', message: (e as Error).message, stderrTail: [] })
     }
   } finally {

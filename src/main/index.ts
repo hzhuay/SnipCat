@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import { app, BrowserWindow, shell } from 'electron'
-import { registerIpc } from './ipc'
+import { registerIpc, shutdownJobs } from './ipc'
 import { registerMediaProtocol, registerMediaSchemePrivileges } from './mediaProtocol'
 
 // 必须在 app ready 之前声明协议权限
@@ -59,4 +59,10 @@ void app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
+})
+
+// 退出前清掉所有受管 ffmpeg 子进程（含被后台队列挂起的）。
+// killAllManaged 用同步 taskkill，退出前必然落地；taskkill /T /F 对挂起进程同样有效。
+app.on('before-quit', () => {
+  shutdownJobs()
 })

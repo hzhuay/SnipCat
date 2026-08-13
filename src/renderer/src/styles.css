@@ -401,6 +401,111 @@ a {
   color: #f0a0a0;
 }
 
+/* 日志面板：比内嵌的 log-box 更高，逐行着色 */
+.log-box.log-panel-box {
+  max-height: 320px;
+}
+
+.log-line {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.log-line.log-warn {
+  color: #f0c674;
+}
+
+.log-line.log-error {
+  color: #f0a0a0;
+}
+
+/* ── 顶部菜单栏 ─────────────────────────── */
+
+.menu-bar {
+  align-items: center;
+  background: #1d1d23;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 4px;
+  padding: 6px 10px;
+}
+
+.menu-brand {
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+  margin-right: 14px;
+  user-select: none;
+}
+
+.menu-item {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 4px 12px;
+}
+
+.menu-item:hover {
+  background: #2a2a32;
+  color: var(--text);
+}
+
+.menu-item.active {
+  background: #2a2a32;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.menu-badge {
+  background: var(--accent);
+  border-radius: 9px;
+  color: #fff;
+  font-size: 10px;
+  margin-left: 4px;
+  padding: 1px 6px;
+}
+
+/* ── 后台任务队列 ────────────────────────── */
+
+.queue-item {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 8px;
+  padding: 8px 12px;
+}
+
+.queue-status {
+  border-radius: 4px;
+  flex: none;
+  font-size: 11px;
+  margin-right: 8px;
+  padding: 2px 6px;
+}
+
+.queue-status.queue-queued { background: #33333c; color: #c8c8d0; }
+.queue-status.queue-running { background: #1e3a5f; color: #8cc9ff; }
+.queue-status.queue-paused { background: #3a2f18; color: #f0c674; }
+.queue-status.queue-done { background: #1e3a24; color: #7ed9a0; }
+.queue-status.queue-error { background: #3a1e1e; color: #ff9b9b; }
+.queue-status.queue-canceled { background: #33333c; color: #9999a3; }
+
+.queue-name {
+  color: var(--text);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queue-meta {
+  font-size: 11px;
+  margin-top: 4px;
+}
+
 details summary {
   color: var(--text-dim);
   cursor: pointer;

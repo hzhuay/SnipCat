@@ -86,4 +86,37 @@ export async function requireBinaries(): Promise<{ ffmpeg: string; ffprobe: stri
 /** 清空缓存，用于"重新检测"按钮 */
 export function invalidateEnvCache(): void {
   cached = null
+  encoderSupport = null
+}
+
+/** 编码器可用性（是否内置 av1_amf 等），带缓存 */
+let encoderSupport: Record<string, boolean> | null = null
+
+/**
+ * 探测 ffmpeg 内置了哪些压缩编码器。
+ *
+ * 只读 `ffmpeg -encoders` 的输出（约 100ms），不初始化 GPU —— 编码器出现在
+ * 列表里不代表驱动一定能跑（如核显 RDNA2 就编不了 AV1），真正失败会在编码时
+ * 报错并显示在日志里。UI 用它来决定「硬件编码」选项是否可选。
+ */
+export async function detectEncoderSupport(force = false): Promise<Record<string, boolean>> {
+  if (encoderSupport && !force) return encoderSupport
+
+  const support: Record<string, boolean> = { amf: false }
+  try {
+    const { ffmpeg } = await requireBinaries()
+    const out = await new Promise<string>((resolve) => {
+      const child = spawn(ffmpeg, ['-hide_banner', '-encoders'], { shell: false })
+      let s = ''
+      child.stdout.on('data', (d: Buffer) => (s += d.toString('utf8')))
+      child.stderr.on('data', (d: Buffer) => (s += d.toString('utf8')))
+      child.on('error', () => resolve(''))
+      child.on('close', () => resolve(s))
+    })
+    support.amf = /\bav1_amf\b/.test(out)
+  } catch {
+    // 探测失败按不支持处理
+  }
+  encoderSupport = support
+  return support
 }

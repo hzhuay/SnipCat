@@ -28,6 +28,7 @@ import {
 import { requireBinaries } from './locate'
 import { runChecked } from './runner'
 import type { ProcessHandle } from './runner'
+import { logInfo, logWarn } from '../log'
 
 /** 逐级放大的关键帧探测窗口：(向前回看秒数, 窗口长度) */
 const WINDOWS: Array<[number, number]> = [
@@ -87,7 +88,13 @@ async function resolveStart(
 ): Promise<number> {
   if (target <= 0) return 0
   const kf = await keyframesAround(ffprobe, filePath, target, handle)
-  return snapToKeyframe(kf, target) ?? 0
+  const result = snapToKeyframe(kf, target) ?? 0
+  logInfo(
+    `起点吸附：目标 ${target.toFixed(3)}s，关键帧 [${kf
+      .map((x) => x.toFixed(3))
+      .join(', ')}] → 落点 ${result.toFixed(3)}s`
+  )
+  return result
 }
 
 /**
@@ -117,7 +124,20 @@ async function resolveEnd(
   const forward = snapForwardToKeyframe(frames, target)
 
   // 找不到更晚的帧说明目标之后就是片尾
-  return Math.min(forward ?? durationSec, durationSec)
+  const result = Math.min(forward ?? durationSec, durationSec)
+  if (forward === null) {
+    logWarn(
+      `终点吸附：目标 ${target.toFixed(3)}s 附近探测窗口内没有 ≥ 目标的帧` +
+        `（窗口 ${frames.length} 帧，最后 ${frames[frames.length - 1]?.toFixed(3) ?? '-'}s），` +
+        `回退到片尾 ${durationSec.toFixed(3)}s`
+    )
+  } else {
+    logInfo(
+      `终点吸附：目标 ${target.toFixed(3)}s，帧首 ${frames[0]?.toFixed(3) ?? '-'}s / ` +
+        `帧末 ${frames[frames.length - 1]?.toFixed(3) ?? '-'}s → 落点 ${result.toFixed(3)}s`
+    )
+  }
+  return result
 }
 
 /**
@@ -140,13 +160,16 @@ export async function snapSegments(
 ): Promise<SnapResult[]> {
   const { ffprobe } = await requireBinaries()
 
+  logInfo(`吸附 ${targets.length} 段的切点（源 ${filePath}，总时长 ${durationSec.toFixed(3)}s）`)
+
   const out: SnapResult[] = []
   {
     // 同一时间点只探一次 —— 多段用同样的边界时省掉重复调用
     const startCache = new Map<number, number>()
     const endCache = new Map<number, number>()
 
-    for (const [rawStart, rawEnd] of targets) {
+    for (let i = 0; i < targets.length; i++) {
+      const [rawStart, rawEnd] = targets[i]
       handle?.throwIfCanceled()
 
       let start = startCache.get(rawStart)
@@ -162,7 +185,13 @@ export async function snapSegments(
       }
 
       // 兜底：极端畸形输入下若出现 end <= start，退回原始终点
-      out.push({ startSec: start, endSec: end > start ? end : Math.min(rawEnd, durationSec) })
+      const finalEnd = end > start ? end : Math.min(rawEnd, durationSec)
+      out.push({ startSec: start, endSec: finalEnd })
+      logInfo(
+        `第 ${i + 1} 段：${rawStart.toFixed(3)}–${rawEnd.toFixed(3)}s → ` +
+          `实际 ${start.toFixed(3)}–${finalEnd.toFixed(3)}s` +
+          (end > start ? '' : '（吸附异常，退回原始终点）')
+      )
     }
 
   }

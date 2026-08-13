@@ -13,15 +13,22 @@ import { SegmentList } from './components/SegmentList'
 import { OutputPanel } from './components/OutputPanel'
 import { CommandPanel } from './components/CommandPanel'
 import { ProgressPanel } from './components/ProgressPanel'
+import { LogPanel } from './components/LogPanel'
+import { MenuBar, type View } from './components/MenuBar'
+import { TaskPanel } from './components/TaskPanel'
 
 /** 拖动边界时段落的最小时长，避免拖成零长度或反向 */
 const MIN_SEGMENT_SEC = 0.1
 
 export function App() {
   const [state, dispatch] = useAppState()
-  const { env, meta, segments, mode, suffix, dryRun, job, plan } = state
+  const { env, meta, segments, mode, encoder, suffix, dryRun, job, plan, logs, tasks } = state
   const previewRef = useRef<PreviewHandle>(null)
   const [canPlay, setCanPlay] = useState(false)
+  /** 菜单栏当前视图：主流程 / 后台任务 / 日志 */
+  const [view, setView] = useState<View>('workflow')
+  /** 硬件 AV1 编码器（av1_amf）是否可用 */
+  const [amfAvailable, setAmfAvailable] = useState(false)
   /** 全页面拖放：正在拖入文件时的遮罩提示与失败原因 */
   const dragDepth = useRef(0)
   const [dragging, setDragging] = useState(false)
@@ -34,13 +41,74 @@ export function App() {
     void window.api.checkEnv().then((e) => dispatch({ type: 'env/loaded', env: e }))
   }, [dispatch])
 
-  // 订阅任务事件
+  // 探测硬件 AV1 编码器是否可用，决定「编码器」选项里硬件项能否选
+  useEffect(() => {
+    void window.api.checkEncoders().then((enc) => setAmfAvailable(Boolean(enc.amf)))
+  }, [])
+
+  // 订阅任务事件：只用 ref 读最新前台 jobId，把前台任务的事件交给 ProgressPanel；
+  // 后台压缩任务的进度/状态由 task:event 提供，job:event 里其它 jobId 忽略。
+  const fgJobIdRef = useRef(job.jobId)
+  fgJobIdRef.current = job.jobId
   useEffect(() => {
     return window.api.onJobEvent((jobId, event) => {
-      if (jobId !== job.jobId) return
-      dispatch({ type: 'job/event', event })
+      if (jobId === fgJobIdRef.current) dispatch({ type: 'job/event', event })
     })
-  }, [dispatch, job.jobId])
+  }, [dispatch])
+
+  // 订阅后台任务列表更新（task:event 推送完整任务）
+  useEffect(() => {
+    return window.api.onTaskEvent((task) => dispatch({ type: 'task/upsert', task }))
+  }, [dispatch])
+
+  // 订阅全局处理日志（探测、吸附、切分、拼接的中间过程）
+  useEffect(() => {
+    return window.api.onLogEvent((entry) => dispatch({ type: 'log/add', entry }))
+  }, [dispatch])
+
+  // 挂载：载入已保存的后台任务 + 恢复上次编辑会话（时间段自动找回）
+  useEffect(() => {
+    void window.api
+      .listTasks()
+      .then((tasks) => dispatch({ type: 'task/list', tasks }))
+      .catch(() => undefined)
+
+    void window.api.loadSession().then(async (session) => {
+      if (!session) return
+      try {
+        const m = await window.api.probe(session.inputPath)
+        const url = await window.api.mediaUrl(session.inputPath)
+        dispatch({
+          type: 'session/restored',
+          meta: m,
+          mediaUrl: url,
+          segments: session.segments,
+          mode: session.mode,
+          suffix: session.suffix,
+          encoder: session.encoder ?? 'svtav1',
+        })
+        setView('workflow')
+      } catch {
+        // 上次的视频文件已被删除/移动，静默跳过恢复
+      }
+    })
+  }, [dispatch])
+
+  // 编辑会话自动保存：源视频 + 时间段 + 模式 + 后缀 + 编码器（600ms 防抖）
+  useEffect(() => {
+    if (!meta) return
+    const timer = setTimeout(() => {
+      void window.api.saveSession({
+        inputPath: meta.path,
+        segments: segments.map((s) => ({ startRaw: s.startRaw, endRaw: s.endRaw })),
+        mode,
+        suffix,
+        encoder,
+        updatedAt: Date.now(),
+      })
+    }, 600)
+    return () => clearTimeout(timer)
+  }, [meta, segments, mode, suffix, encoder])
 
   const validation = useMemo(() => validateSegments(segments, meta), [segments, meta])
 
@@ -99,6 +167,8 @@ export function App() {
         const m = await window.api.probe(path)
         const url = await window.api.mediaUrl(path)
         dispatch({ type: 'probe/success', meta: m, mediaUrl: url })
+        // 从后台任务/日志视图拖入新文件时，自动切回主流程
+        setView('workflow')
       } catch (e) {
         dispatch({ type: 'probe/failure', message: (e as Error).message })
       }
@@ -241,8 +311,8 @@ export function App() {
     if (!meta) return null
     const exec = resolveExecutableSegments(segments, meta)
     if (exec.length === 0) return null
-    return { input: meta, segments: exec, mode, outputPath }
-  }, [meta, segments, mode, outputPath])
+    return { input: meta, segments: exec, mode, outputPath, suffix, encoder }
+  }, [meta, segments, mode, outputPath, suffix, encoder])
 
   const doPlan = useCallback(async () => {
     const req = buildRequest()
@@ -272,18 +342,72 @@ export function App() {
     }
 
     try {
-      const { jobId } = await window.api.startJob({ ...req, outputPath: finalPath })
-      dispatch({ type: 'job/started', jobId })
+      const { jobId, lane } = await window.api.startJob({ ...req, outputPath: finalPath })
+      // 前台流复制进 ProgressPanel；压缩进后台队列（queued 事件已建队列项）
+      if (lane === 'fg') dispatch({ type: 'job/started', jobId })
     } catch (e) {
       dispatch({ type: 'plan/failed', message: (e as Error).message })
     }
   }, [buildRequest, dispatch])
+
+  /** 往全局日志里追加一条错误（供后台任务的异常在日志视图可见） */
+  const pushErrorLog = useCallback(
+    (message: string) => {
+      const d = new Date()
+      const pad = (n: number) => String(n).padStart(2, '0')
+      dispatch({
+        type: 'log/add',
+        entry: { ts: `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`, level: 'error', message },
+      })
+    },
+    [dispatch]
+  )
+
+  /** 重新运行已保存的压缩任务（主进程用保存的时间段重新入队） */
+  const resumeTask = useCallback(
+    async (taskId: string) => {
+      try {
+        await window.api.resumeTask(taskId)
+      } catch (e) {
+        pushErrorLog(`重新运行失败：${(e as Error).message}`)
+      }
+    },
+    [pushErrorLog]
+  )
+
+  /** 把任务的时间段/mode/后缀载入编辑器微调 */
+  const loadTaskIntoEditor = useCallback(
+    async (taskId: string) => {
+      try {
+        const t = await window.api.loadTaskIntoEditor(taskId)
+        const m = await window.api.probe(t.inputPath)
+        const url = await window.api.mediaUrl(t.inputPath)
+        dispatch({
+          type: 'session/restored',
+          meta: m,
+          mediaUrl: url,
+          segments: t.segments,
+          mode: t.mode,
+          suffix: t.suffix,
+          encoder: t.encoder ?? 'svtav1',
+        })
+        setView('workflow')
+      } catch (e) {
+        pushErrorLog(`载入任务失败：${(e as Error).message}`)
+      }
+    },
+    [dispatch, pushErrorLog]
+  )
 
   const runnable =
     envReady &&
     !running &&
     suffix.trim() !== '' &&
     canRun(segments, meta, validation)
+
+  const activeTaskCount = tasks.filter(
+    (t) => t.status === 'queued' || t.status === 'running' || t.status === 'paused'
+  ).length
 
   return (
     <div
@@ -293,6 +417,27 @@ export function App() {
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
+      <MenuBar view={view} activeTaskCount={activeTaskCount} onSelect={setView} />
+
+      {view === 'tasks' && (
+        <TaskPanel
+          tasks={tasks}
+          onCancel={(jobId) => void window.api.cancelJob(jobId)}
+          onReveal={(p) => void window.api.reveal(p)}
+          onResume={(taskId) => void resumeTask(taskId)}
+          onLoad={(taskId) => void loadTaskIntoEditor(taskId)}
+          onDelete={(taskId) =>
+            void window.api.deleteTask(taskId).then(() => dispatch({ type: 'task/delete', taskId }))
+          }
+        />
+      )}
+
+      {view === 'logs' && (
+        <LogPanel logs={logs} onClear={() => dispatch({ type: 'log/clear' })} />
+      )}
+
+      {view === 'workflow' && (
+        <>
       <EnvBanner
         env={env}
         onRecheck={() =>
@@ -363,10 +508,13 @@ export function App() {
             suffix={suffix}
             outputPath={outputPath}
             mode={mode}
+            encoder={encoder}
+            amfAvailable={amfAvailable}
             dryRun={dryRun}
             disabled={running}
             onSuffixChange={(v) => dispatch({ type: 'suffix/set', suffix: v })}
             onModeChange={(m) => dispatch({ type: 'mode/set', mode: m })}
+            onEncoderChange={(enc) => dispatch({ type: 'encoder/set', encoder: enc })}
             onDryRunChange={(v) => dispatch({ type: 'dryRun/set', value: v })}
           />
 
@@ -394,6 +542,9 @@ export function App() {
               </button>
             </div>
           )}
+
+        </>
+      )}
         </>
       )}
 

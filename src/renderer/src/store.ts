@@ -6,7 +6,18 @@
  */
 
 import { useReducer } from 'react'
-import type { CutMode, EnvStatus, JobEvent, JobStage, Segment, VideoMeta } from '@shared/types'
+import type {
+  CompressEncoder,
+  CutMode,
+  EnvStatus,
+  JobEvent,
+  JobStage,
+  LogEntry,
+  Segment,
+  TaskState,
+  VideoMeta,
+} from '@shared/types'
+import { DEFAULT_SUFFIX } from '@shared/types'
 import { parseTime } from '@shared/time'
 import type { PlannedCommand } from '../../preload'
 
@@ -17,7 +28,6 @@ export interface JobState {
   stageTotal?: number
   ratio: number
   etaSec?: number
-  logs: string[]
   commands: PlannedCommand[]
   /** 完成信息 */
   result: { outputPath: string; elapsedSec: number } | null
@@ -34,19 +44,24 @@ export interface State {
   probeError: string | null
   segments: Segment[]
   mode: CutMode
+  /** 压缩模式使用的编码器 */
+  encoder: CompressEncoder
   suffix: string
   dryRun: boolean
   job: JobState
   /** Dry-run 的结果（不进入 job 状态） */
   plan: PlannedCommand[] | null
   planning: boolean
+  /** 全局处理日志（探测、吸附、切分、拼接的全部中间过程） */
+  logs: LogEntry[]
+  /** 后台压缩任务列表（含历史/已中断任务，task:event 实时更新） */
+  tasks: TaskState[]
 }
 
 const emptyJob: JobState = {
   jobId: null,
   stage: null,
   ratio: 0,
-  logs: [],
   commands: [],
   result: null,
   error: null,
@@ -64,6 +79,11 @@ function newSegment(startRaw = '', endRaw = ''): Segment {
   }
 }
 
+/** 从持久化/保存的原始字符串重建时间段列表（恢复会话、载入任务到编辑器用） */
+function segmentsFromRaw(list: { startRaw: string; endRaw: string }[]): Segment[] {
+  return list.map((s) => newSegment(s.startRaw, s.endRaw))
+}
+
 export const initialState: State = {
   env: null,
   meta: null,
@@ -72,12 +92,15 @@ export const initialState: State = {
   probeError: null,
   segments: [newSegment()],
   mode: 'copy',
+  encoder: 'svtav1',
   suffix: '_cut',
   // 开发期默认勾选：mac 上没有 ffmpeg，先看命令
   dryRun: false,
   job: emptyJob,
   plan: null,
   planning: false,
+  logs: [],
+  tasks: [],
 }
 
 export type Action =
@@ -96,6 +119,7 @@ export type Action =
   | { type: 'seg/clearSnaps' }
   | { type: 'seg/applySnaps'; snaps: Array<{ startSec: number; endSec: number }>; ids: string[] }
   | { type: 'mode/set'; mode: CutMode }
+  | { type: 'encoder/set'; encoder: CompressEncoder }
   | { type: 'suffix/set'; suffix: string }
   | { type: 'dryRun/set'; value: boolean }
   | { type: 'plan/start' }
@@ -105,6 +129,20 @@ export type Action =
   | { type: 'job/started'; jobId: string }
   | { type: 'job/event'; event: JobEvent }
   | { type: 'job/reset' }
+  | { type: 'log/add'; entry: LogEntry }
+  | { type: 'log/clear' }
+  | { type: 'task/list'; tasks: TaskState[] }
+  | { type: 'task/upsert'; task: TaskState }
+  | { type: 'task/delete'; taskId: string }
+  | {
+      type: 'session/restored'
+      meta: VideoMeta
+      mediaUrl: string | null
+      segments: { startRaw: string; endRaw: string }[]
+      mode: CutMode
+      suffix: string
+      encoder: CompressEncoder
+    }
 
 /** 编辑输入框时同步解析结果，并清掉该端已有的吸附值（时间变了吸附就失效） */
 function editSegment(
@@ -130,7 +168,8 @@ export function reducer(state: State, action: Action): State {
       return { ...state, env: action.env }
 
     case 'probe/start':
-      return { ...state, probing: true, probeError: null }
+      // 新文件 = 新日志会话：清空上一份的日志，探测本身的过程会重新记进来
+      return { ...state, probing: true, probeError: null, logs: [] }
 
     case 'probe/success':
       return {
@@ -148,8 +187,33 @@ export function reducer(state: State, action: Action): State {
     case 'probe/failure':
       return { ...state, probing: false, probeError: action.message, meta: null, mediaUrl: null }
 
+    // 恢复上次的编辑会话：等价于 probe/success，但时间段/mode/后缀来自保存的值
+    case 'session/restored':
+      return {
+        ...state,
+        probing: false,
+        probeError: null,
+        meta: action.meta,
+        mediaUrl: action.mediaUrl,
+        segments: segmentsFromRaw(action.segments),
+        mode: action.mode,
+        suffix: action.suffix,
+        encoder: action.encoder,
+        plan: null,
+        job: emptyJob,
+        logs: [],
+      }
+
     case 'file/clear':
-      return { ...state, meta: null, mediaUrl: null, probeError: null, plan: null, job: emptyJob }
+      return {
+        ...state,
+        meta: null,
+        mediaUrl: null,
+        probeError: null,
+        plan: null,
+        job: emptyJob,
+        logs: [],
+      }
 
     case 'seg/add':
       return { ...state, segments: [...state.segments, newSegment()], plan: null }
@@ -218,10 +282,15 @@ export function reducer(state: State, action: Action): State {
     }
 
     case 'mode/set':
-      // 精确模式不吸附，切换时清掉吸附值避免显示错的实际切点
+      // 切换模式时清掉吸附值，避免显示错的实际切点
+      // 后缀若还是旧模式的默认值（即用户没改过），随模式切到新默认；改过则保留
       return {
         ...state,
         mode: action.mode,
+        suffix:
+          state.suffix === DEFAULT_SUFFIX[state.mode]
+            ? DEFAULT_SUFFIX[action.mode]
+            : state.suffix,
         segments: state.segments.map((s) => ({
           ...s,
           snappedStartSec: undefined,
@@ -229,6 +298,9 @@ export function reducer(state: State, action: Action): State {
         })),
         plan: null,
       }
+
+    case 'encoder/set':
+      return { ...state, encoder: action.encoder, plan: null }
 
     case 'suffix/set':
       return { ...state, suffix: action.suffix, plan: null }
@@ -257,13 +329,33 @@ export function reducer(state: State, action: Action): State {
     case 'job/reset':
       return { ...state, job: emptyJob }
 
+    case 'log/add':
+      return { ...state, logs: [...state.logs, action.entry].slice(-MAX_LOG_LINES) }
+
+    case 'log/clear':
+      return { ...state, logs: [] }
+
+    case 'task/list':
+      return { ...state, tasks: action.tasks }
+
+    case 'task/upsert': {
+      const i = state.tasks.findIndex((t) => t.id === action.task.id)
+      if (i < 0) return { ...state, tasks: [action.task, ...state.tasks] }
+      const tasks = [...state.tasks]
+      tasks[i] = action.task
+      return { ...state, tasks }
+    }
+
+    case 'task/delete':
+      return { ...state, tasks: state.tasks.filter((t) => t.id !== action.taskId) }
+
     default:
       return state
   }
 }
 
 /** 保留的日志行数上限，避免长任务把内存吃掉 */
-const MAX_LOG_LINES = 400
+const MAX_LOG_LINES = 800
 
 function applyJobEvent(job: JobState, e: JobEvent): JobState {
   switch (e.type) {
@@ -273,10 +365,6 @@ function applyJobEvent(job: JobState, e: JobEvent): JobState {
       return { ...job, stage: e.stage, stageIndex: e.index, stageTotal: e.total }
     case 'progress':
       return { ...job, ratio: e.ratio, etaSec: e.etaSec }
-    case 'log': {
-      const logs = [...job.logs, e.line]
-      return { ...job, logs: logs.slice(-MAX_LOG_LINES) }
-    }
     case 'done':
       return { ...job, ratio: 1, stage: null, result: { outputPath: e.outputPath, elapsedSec: e.elapsedSec } }
     case 'error':

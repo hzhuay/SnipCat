@@ -75,6 +75,13 @@ export interface Segment {
 /** 切分模式：copy = 流复制无损但切点吸附关键帧；compress = 重编码并用 AV1 压缩体积 */
 export type CutMode = 'copy' | 'compress'
 
+/**
+ * 压缩模式的编码器：
+ *  - svtav1 = 软件 AV1（SVT-AV1，体积最优、压缩慢）
+ *  - amf    = AMD 硬件 AV1（av1_amf，依赖独立显卡，快 10~30 倍，同画质体积略大）
+ */
+export type CompressEncoder = 'svtav1' | 'amf'
+
 /** 单段的校验结果 */
 export interface SegmentIssue {
   segmentId: string
@@ -99,20 +106,97 @@ export interface JobRequest {
   mode: CutMode
   /** 输出的最终绝对路径 */
   outputPath: string
+  /** 输出后缀（持久化任务需要，重新运行 / 载入编辑时还原） */
+  suffix: string
+  /** 压缩模式使用的编码器 */
+  encoder: CompressEncoder
 }
 
 /** 任务执行阶段 */
 export type JobStage = 'probe' | 'keyframe' | 'cut' | 'concat' | 'finalize'
+
+/** 日志级别 */
+export type LogLevel = 'info' | 'warn' | 'error'
+
+/** 一条处理日志，统一经 log:event 推送到渲染进程 */
+export interface LogEntry {
+  /** HH:MM:SS.mmm 本地时间 */
+  ts: string
+  level: LogLevel
+  message: string
+}
+
+/** 后台队列任务的状态 */
+export type JobStatus = 'queued' | 'running' | 'paused' | 'done' | 'error' | 'canceled'
+
+/** 持久化任务的状态（interrupted = 应用退出时被打断，等待重新运行） */
+export type TaskStatus = JobStatus | 'interrupted'
+
+/** 持久化的后台压缩任务（只存压缩任务，不存前台流复制） */
+export interface PersistedTask {
+  /** 稳定 id，跨会话不变（重启后重新运行复用同一个 id） */
+  id: string
+  inputPath: string
+  /** 保留原始输入字符串，重设时不用重新解析起终点 */
+  segments: { startRaw: string; endRaw: string }[]
+  mode: CutMode
+  suffix: string
+  encoder: CompressEncoder
+  outputPath: string
+  createdAt: number
+  status: TaskStatus
+  error?: string
+}
+
+/** 编辑会话（当前工作状态），下次打开自动恢复时间段 */
+export interface PersistedSession {
+  inputPath: string
+  segments: { startRaw: string; endRaw: string }[]
+  mode: CutMode
+  suffix: string
+  encoder: CompressEncoder
+  updatedAt: number
+}
+
+/** 渲染层看到的任务（持久化字段 + 实时进度；jobId 仅本次会话有效，供取消） */
+export interface TaskState extends PersistedTask {
+  ratio: number
+  etaSec?: number
+  jobId?: string
+}
+
+/** 各切分模式的默认输出后缀（切换模式时若后缀未改过则自动切换） */
+export const DEFAULT_SUFFIX: Record<CutMode, string> = {
+  copy: '_cut',
+  compress: '_cut_compressed',
+}
+
+/** 后台队列快照，渲染层重载后恢复队列视图用 */
+export interface QueueSnapshot {
+  fg: { jobId: string } | null
+  queue: Array<{
+    jobId: string
+    status: JobStatus
+    outputPath: string
+    ratio: number
+    etaSec?: number
+    error?: { message: string; stderrTail: string[] }
+  }>
+}
 
 /** 主进程推送给渲染进程的任务事件 */
 export type JobEvent =
   | { type: 'plan'; commands: CommandSpec[] }
   | { type: 'stage'; stage: JobStage; index?: number; total?: number }
   | { type: 'progress'; ratio: number; etaSec?: number }
-  | { type: 'log'; line: string }
   | { type: 'done'; outputPath: string; elapsedSec: number }
   | { type: 'error'; message: string; stderrTail: string[] }
   | { type: 'canceled' }
+  // 队列调度事件（后台任务 / 前台任务通用）
+  | { type: 'queued'; outputPath: string }
+  | { type: 'started' }
+  | { type: 'paused' }
+  | { type: 'resumed' }
 
 /**
  * 一条待执行的命令。
