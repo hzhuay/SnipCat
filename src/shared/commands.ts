@@ -16,33 +16,10 @@ import { toFFmpegTime } from './time'
 /** 需要 +faststart 的容器扩展名（把 moov box 移到文件头，便于快速起播） */
 const FASTSTART_EXTS = new Set(['.mp4', '.m4v', '.mov', '.m4a'])
 
-/**
- * codec_name → 编码器名的映射，仅精确模式使用。
- *
- * 刻意不做兜底猜测：表里没有的 codec 会让精确模式被禁用并说明原因，
- * 猜一个编码器可能产出与原视频差异很大的结果，比直接拒绝更糟。
- */
-const VIDEO_ENCODERS: Record<string, string> = {
-  h264: 'libx264',
-  hevc: 'libx265',
-  vp8: 'libvpx',
-  vp9: 'libvpx-vp9',
-  av1: 'libsvtav1',
-  mpeg4: 'mpeg4',
-  mpeg2video: 'mpeg2video',
-}
-
-const AUDIO_ENCODERS: Record<string, string> = {
-  aac: 'aac',
-  mp3: 'libmp3lame',
-  opus: 'libopus',
-  vorbis: 'libvorbis',
-  flac: 'flac',
-  ac3: 'ac3',
-  eac3: 'eac3',
-  pcm_s16le: 'pcm_s16le',
-  pcm_s24le: 'pcm_s24le',
-}
+/** 压缩模式的 AV1 编码参数：CRF 越低画质越好体积越大，28 是压体积优先的中间值 */
+const COMPRESS_CRF = 28
+/** SVT-AV1 的 preset：0-13，越小越慢越省体积，6 是速度与体积的折中 */
+const COMPRESS_PRESET = 6
 
 /** 用正斜杠拼接路径片段 */
 export function joinPosix(...parts: string[]): string {
@@ -260,18 +237,14 @@ function firstStream(meta: VideoMeta, type: StreamInfo['codecType']): StreamInfo
 }
 
 /**
- * 精确模式是否可用。不可用时返回原因，用于在 UI 上禁用开关并说明。
+ * 压缩模式是否可用。不可用时返回原因，用于在 UI 上禁用开关并说明。
+ *
+ * 只要求有视频流即可 —— 压缩模式统一用 libsvtav1 重编码视频，不依赖原视频的
+ * codec；音频轨直接 copy，不重编码也就没有编码器兼容性问题。
  */
-export function checkPreciseModeSupport(meta: VideoMeta): { ok: boolean; reason?: string } {
+export function checkCompressModeSupport(meta: VideoMeta): { ok: boolean; reason?: string } {
   const v = firstStream(meta, 'video')
   if (!v) return { ok: false, reason: '未找到视频流' }
-  if (!VIDEO_ENCODERS[v.codecName]) {
-    return { ok: false, reason: `视频编码 ${v.codecName} 没有对应的编码器，无法复刻参数` }
-  }
-  const a = firstStream(meta, 'audio')
-  if (a && !AUDIO_ENCODERS[a.codecName]) {
-    return { ok: false, reason: `音频编码 ${a.codecName} 没有对应的编码器，无法复刻参数` }
-  }
   return { ok: true }
 }
 
@@ -321,7 +294,7 @@ export function buildCutCommand(
 ): CommandSpec {
   const isCopy = mode === 'copy'
   const rawStart = seg.startSec as number
-  // 终点向后留余量（由主进程实测回填）；精确模式用原值
+  // 终点向后留余量（由主进程实测回填）；压缩模式重编码，可以切在任意帧，用原值
   const end = isCopy && seg.snappedEndSec !== undefined
     ? seg.snappedEndSec
     : (seg.endSec as number)
@@ -349,7 +322,7 @@ export function buildCutCommand(
   if (isCopy) {
     argv.push('-c', 'copy', '-avoid_negative_ts', 'make_zero')
   } else {
-    argv.push(...buildPreciseEncodeArgs(meta))
+    argv.push(...buildCompressEncodeArgs(meta))
   }
 
   argv.push(toPosixPath(outPath))
@@ -358,40 +331,23 @@ export function buildCutCommand(
 }
 
 /**
- * 精确模式的编码参数：用 ffprobe 读到的字段重建编码器设置。
+ * 压缩模式的编码参数：AV1（libsvtav1）+ CRF 压体积，音频轨直接 copy。
  *
- * 注意这是"视觉上一致"而非原始码流 —— 有一次重编码损失。UI 上必须写清楚。
+ * 音频不重编码：视频体积通常占绝大部分，音频轨 copy 既省一次编码损失，
+ * 也省了音频编码器兼容性判断。
+ *
+ * pix_fmt 固定成 yuv420p10le：SVT-AV1 在高于 8bit 输入时默认切 10bit 内部处理，
+ * 显式指定避免不同源文件 bit depth 不一致导致的输出差异；字幕轨仍按需 copy。
  */
-function buildPreciseEncodeArgs(meta: VideoMeta): string[] {
-  const args: string[] = []
-  const v = firstStream(meta, 'video')
-  const a = firstStream(meta, 'audio')
+function buildCompressEncodeArgs(meta: VideoMeta): string[] {
+  const args = [
+    '-c:v', 'libsvtav1',
+    '-crf', String(COMPRESS_CRF),
+    '-preset', String(COMPRESS_PRESET),
+    '-pix_fmt', 'yuv420p10le',
+    '-c:a', 'copy',
+  ]
 
-  if (v) {
-    const encoder = VIDEO_ENCODERS[v.codecName]
-    args.push('-c:v', encoder)
-    if (v.profile) args.push('-profile:v', v.profile.toLowerCase().replace(/\s+/g, ''))
-    // ffprobe 的 level 是实际值 ×10，如 4.0 → 40
-    if (v.level && v.level > 0) args.push('-level', (v.level / 10).toFixed(1))
-    if (v.pixFmt) args.push('-pix_fmt', v.pixFmt)
-    if (v.rFrameRate && v.rFrameRate !== '0/0') args.push('-r', v.rFrameRate)
-    if (v.bitRate && v.bitRate > 0) {
-      const kb = Math.round(v.bitRate / 1000)
-      args.push('-b:v', `${kb}k`, '-maxrate', `${kb}k`, '-bufsize', `${kb * 2}k`)
-    }
-    if (v.colorPrimaries) args.push('-color_primaries', v.colorPrimaries)
-    if (v.colorTransfer) args.push('-color_trc', v.colorTransfer)
-    if (v.colorSpace) args.push('-colorspace', v.colorSpace)
-  }
-
-  if (a) {
-    args.push('-c:a', AUDIO_ENCODERS[a.codecName])
-    if (a.bitRate && a.bitRate > 0) args.push('-b:a', `${Math.round(a.bitRate / 1000)}k`)
-    if (a.sampleRate) args.push('-ar', String(a.sampleRate))
-    if (a.channels) args.push('-ac', String(a.channels))
-  }
-
-  // 字幕重编码没有意义，直接复制
   if (meta.streams.some((s) => s.codecType === 'subtitle')) {
     args.push('-c:s', 'copy')
   }

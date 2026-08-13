@@ -7,7 +7,7 @@
  * 用法（都从项目根目录运行）：
  *   npm run commands                 # 内置的 h264 mp4 示例
  *   npm run commands -- --mkv        # 4K HEVC 多轨 mkv 示例（路径含空格和单引号）
- *   npm run commands -- --precise    # 精确模式（重编码）
+ *   npm run commands -- --compress   # 压缩模式（AV1 重编码）
  *   npm run commands -- --single     # 只有一段（验证跳过 concat 的分支）
  *   npm run commands -- --probe=path/to/ffprobe-output.json --file=D:/v/a.mp4
  *                                    # 用真实的 ffprobe 输出（Windows 上可先重定向到文件）
@@ -27,7 +27,7 @@ const valueOf = (name) => {
   return hit ? hit.slice(name.length + 3) : null
 }
 
-const mode = has('--precise') ? 'precise' : 'copy'
+const mode = has('--compress') ? 'compress' : 'copy'
 const single = has('--single')
 
 /** 内置示例，路径是虚构的 —— 只用于构造命令，不会真的读这些视频 */
@@ -95,7 +95,7 @@ console.log(`\n输入   ${meta.path}`)
 console.log(
   `       ${meta.streams[0].codecName} ${meta.streams[0].width}×${meta.streams[0].height} · 时长 ${formatTime(meta.durationSec)}`
 )
-console.log(`模式   ${mode === 'copy' ? '流复制（无损，切点吸附关键帧）' : '精确切分（重编码）'}`)
+console.log(`模式   ${mode === 'copy' ? '流复制（无损，切点吸附关键帧）' : '压缩（AV1 重编码）'}`)
 console.log(`输出   ${outputPath}`)
 console.log(`\n${line}\n时间段`)
 
@@ -118,7 +118,7 @@ for (const [i, s] of edited.entries()) {
         ? Math.abs(delta) > 0.1
           ? `实际 ${formatTime(actual)}  ⚠︎ 偏移 ${formatOffset(delta)}`
           : `实际 ${formatTime(actual)}  ✓`
-        : '帧级精确'
+        : '帧级精确（重编码）'
     if (warn) note += `   ⚠︎ ${warn.message}`
   }
 

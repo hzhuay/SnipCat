@@ -1,5 +1,5 @@
 import type { CutMode, VideoMeta } from '@shared/types'
-import { checkPreciseModeSupport } from '@shared/commands'
+import { checkCompressModeSupport } from '@shared/commands'
 
 interface Props {
   meta: VideoMeta
@@ -15,7 +15,7 @@ interface Props {
 
 /** 输出文件名、切分模式、Dry-run 开关 */
 export function OutputPanel(p: Props) {
-  const precise = checkPreciseModeSupport(p.meta)
+  const compress = checkCompressModeSupport(p.meta)
   const suffixEmpty = p.suffix.trim() === ''
 
   return (
@@ -59,23 +59,25 @@ export function OutputPanel(p: Props) {
           </span>
         </label>
 
-        <label className={`mode-option${precise.ok ? '' : ' disabled'}`}>
+        <label className={`mode-option${compress.ok ? '' : ' disabled'}`}>
           <input
             type="radio"
-            checked={p.mode === 'precise'}
-            disabled={p.disabled || !precise.ok}
-            onChange={() => p.onModeChange('precise')}
+            checked={p.mode === 'compress'}
+            disabled={p.disabled || !compress.ok}
+            onChange={() => p.onModeChange('compress')}
           />
           <span>
-            精确切分
+            压缩
             <div className="mode-desc">
-              {precise.ok ? (
+              {compress.ok ? (
                 <>
-                  帧级精确切在输入的时间点。会<strong>重新编码一次</strong>
-                  ，参数按原视频复刻但不是原始码流，有画质损失，长视频耗时以分钟计。
+                  用 <strong>AV1</strong> 编码器重新编码画面（音频保持原样不重编码），
+                  同画质下体积明显更小，但会<strong>重新编码一次</strong>、有画质损失。
+                  AV1 编码速度较慢，长视频耗时以分钟计；播放需要设备/播放器支持 AV1
+                  硬解或软解，较旧的设备可能卡顿或无法播放。
                 </>
               ) : (
-                precise.reason
+                compress.reason
               )}
             </div>
           </span>

@@ -12,7 +12,7 @@ import {
   buildConcatCommand,
   buildJobCommands,
   buildOutputPath,
-  checkPreciseModeSupport,
+  checkCompressModeSupport,
   renderCommandLine,
   toPosixPath,
   joinPosix,
@@ -290,10 +290,10 @@ describe('buildCutCommand — 流复制模式', () => {
   })
 })
 
-describe('buildCutCommand — 精确模式', () => {
+describe('buildCutCommand — 压缩模式', () => {
   const meta = h264Meta()
-  // 精确模式忽略吸附结果，直接用用户输入的时间
-  const c = buildCutCommand(meta, seg(13, 90, 12.48, 92), 'precise', '/tmp/x/seg_000.mp4', 'x')
+  // 压缩模式忽略吸附结果，直接用用户输入的时间，与精确模式一致
+  const c = buildCutCommand(meta, seg(13, 90, 12.48, 92), 'compress', '/tmp/x/seg_000.mp4', 'x')
 
   it('用用户输入的时间，两端都不吸附', () => {
     expect(flagValue(c.argv, '-ss')).toBe('13.000')
@@ -302,34 +302,25 @@ describe('buildCutCommand — 精确模式', () => {
 
   it('不使用 -c copy', () => {
     expect(c.argv).not.toContain('-avoid_negative_ts')
-    const cIdx = c.argv.indexOf('-c')
-    expect(cIdx).toBe(-1)
+    expect(c.argv.indexOf('-c')).toBe(-1)
   })
 
-  it('从 ffprobe 字段复刻视频编码参数', () => {
-    expect(flagValue(c.argv, '-c:v')).toBe('libx264')
-    expect(flagValue(c.argv, '-profile:v')).toBe('high')
-    // ffprobe 的 level 40 → 4.0
-    expect(flagValue(c.argv, '-level')).toBe('4.0')
-    expect(flagValue(c.argv, '-pix_fmt')).toBe('yuv420p')
-    // 帧率保留分数形式，避免 29.97 的精度损失
-    expect(flagValue(c.argv, '-r')).toBe('30000/1001')
-    expect(flagValue(c.argv, '-b:v')).toBe('5000k')
-    expect(flagValue(c.argv, '-maxrate')).toBe('5000k')
-    expect(flagValue(c.argv, '-bufsize')).toBe('10000k')
+  it('视频用 libsvtav1 + CRF + preset', () => {
+    expect(flagValue(c.argv, '-c:v')).toBe('libsvtav1')
+    expect(flagValue(c.argv, '-crf')).toBe('28')
+    expect(flagValue(c.argv, '-preset')).toBe('6')
+    expect(flagValue(c.argv, '-pix_fmt')).toBe('yuv420p10le')
   })
 
-  it('复刻色彩元数据', () => {
-    expect(flagValue(c.argv, '-color_primaries')).toBe('bt709')
-    expect(flagValue(c.argv, '-color_trc')).toBe('bt709')
-    expect(flagValue(c.argv, '-colorspace')).toBe('bt709')
+  it('音频直接复制，不重编码', () => {
+    expect(flagValue(c.argv, '-c:a')).toBe('copy')
+    expect(c.argv).not.toContain('-b:a')
   })
 
-  it('复刻音频参数', () => {
-    expect(flagValue(c.argv, '-c:a')).toBe('aac')
-    expect(flagValue(c.argv, '-b:a')).toBe('192k')
-    expect(flagValue(c.argv, '-ar')).toBe('48000')
-    expect(flagValue(c.argv, '-ac')).toBe('2')
+  it('不复刻原视频的编码参数（与精确模式的关键区别）', () => {
+    expect(c.argv).not.toContain('-profile:v')
+    expect(c.argv).not.toContain('-level')
+    expect(c.argv).not.toContain('-b:v')
   })
 
   it('无字幕轨时不加 -c:s', () => {
@@ -337,46 +328,35 @@ describe('buildCutCommand — 精确模式', () => {
   })
 
   it('有字幕轨时字幕直接复制', () => {
-    const c2 = buildCutCommand(hevcMeta(), seg(10, 20), 'precise', '/tmp/x/seg_000.mkv', 'x')
+    const c2 = buildCutCommand(hevcMeta(), seg(10, 20), 'compress', '/tmp/x/seg_000.mkv', 'x')
     expect(flagValue(c2.argv, '-c:s')).toBe('copy')
   })
 
-  it('hevc 映射到 libx265', () => {
-    const c2 = buildCutCommand(hevcMeta(), seg(10, 20), 'precise', '/tmp/x/seg_000.mkv', 'x')
-    expect(flagValue(c2.argv, '-c:v')).toBe('libx265')
-    expect(flagValue(c2.argv, '-pix_fmt')).toBe('yuv420p10le')
-    expect(flagValue(c2.argv, '-color_trc')).toBe('smpte2084')
+  it('与视频原编码无关，hevc 源同样走 libsvtav1', () => {
+    const c2 = buildCutCommand(hevcMeta(), seg(10, 20), 'compress', '/tmp/x/seg_000.mkv', 'x')
+    expect(flagValue(c2.argv, '-c:v')).toBe('libsvtav1')
   })
 })
 
-describe('checkPreciseModeSupport', () => {
-  it('h264 + aac 支持', () => {
-    expect(checkPreciseModeSupport(h264Meta())).toEqual({ ok: true })
+describe('checkCompressModeSupport', () => {
+  it('有视频流即支持，不要求特定编码', () => {
+    expect(checkCompressModeSupport(h264Meta())).toEqual({ ok: true })
+    expect(checkCompressModeSupport(hevcMeta())).toEqual({ ok: true })
   })
 
-  it('hevc + aac 支持', () => {
-    expect(checkPreciseModeSupport(hevcMeta())).toEqual({ ok: true })
+  it('没有视频流时不支持', () => {
+    const meta: VideoMeta = { ...h264Meta(), streams: [] }
+    const r = checkCompressModeSupport(meta)
+    expect(r.ok).toBe(false)
+    expect(r.reason).toContain('视频流')
   })
 
-  it('未知视频编码不支持，且给出原因而非猜一个编码器', () => {
+  it('未知视频编码（如 ProRes）仍然支持 —— 不依赖编码映射表', () => {
     const meta: VideoMeta = {
       ...h264Meta(),
       streams: [{ index: 0, codecType: 'video', codecName: 'prores' }],
     }
-    const r = checkPreciseModeSupport(meta)
-    expect(r.ok).toBe(false)
-    expect(r.reason).toContain('prores')
-  })
-
-  it('未知音频编码不支持', () => {
-    const base = h264Meta()
-    const meta: VideoMeta = {
-      ...base,
-      streams: [base.streams[0], { index: 1, codecType: 'audio', codecName: 'truehd' }],
-    }
-    const r = checkPreciseModeSupport(meta)
-    expect(r.ok).toBe(false)
-    expect(r.reason).toContain('truehd')
+    expect(checkCompressModeSupport(meta)).toEqual({ ok: true })
   })
 })
 

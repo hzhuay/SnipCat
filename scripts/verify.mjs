@@ -258,7 +258,7 @@ const longSeg = [
     endSec: meta.durationSec,
   },
 ]
-const p = runJob({ input: meta, segments: longSeg, mode: 'precise', outputPath: cancelOut }, h2, (e) => {
+const p = runJob({ input: meta, segments: longSeg, mode: 'compress', outputPath: cancelOut }, h2, (e) => {
   if (e.type === 'canceled') canceled = true
   if (e.type === 'error') cancelErr = e
   // 一收到第一个进度事件就取消 —— 此时 ffmpeg 确实在跑，取消才有意义

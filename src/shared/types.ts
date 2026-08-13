@@ -72,8 +72,8 @@ export interface Segment {
   snappedEndSec?: number
 }
 
-/** 切分模式：copy = 流复制无损但切点吸附关键帧；precise = 重编码但帧级精确 */
-export type CutMode = 'copy' | 'precise'
+/** 切分模式：copy = 流复制无损但切点吸附关键帧；compress = 重编码并用 AV1 压缩体积 */
+export type CutMode = 'copy' | 'compress'
 
 /** 单段的校验结果 */
 export interface SegmentIssue {

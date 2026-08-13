@@ -12,7 +12,7 @@ import { join } from 'node:path'
 import { buildJobCommands } from '@shared/commands'
 import {
   COPY_WEIGHTS,
-  PRECISE_WEIGHTS,
+  RECODE_WEIGHTS,
   overallRatio,
   estimateEta,
 } from '@shared/progress'
@@ -140,7 +140,7 @@ export async function runJob(
     )
     emit({ type: 'plan', commands: plan.commands })
 
-    const weights = req.mode === 'copy' ? COPY_WEIGHTS : PRECISE_WEIGHTS
+    const weights = req.mode === 'copy' ? COPY_WEIGHTS : RECODE_WEIGHTS
     const total = plan.totalDurationSec
     let completedCutSec = 0
 

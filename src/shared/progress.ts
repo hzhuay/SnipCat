@@ -84,8 +84,8 @@ export interface ProgressWeights {
 }
 
 export const COPY_WEIGHTS: ProgressWeights = { cut: 0.9, concat: 0.1 }
-/** 精确模式下切分是重编码，耗时占绝对主导 */
-export const PRECISE_WEIGHTS: ProgressWeights = { cut: 0.97, concat: 0.03 }
+/** 重编码模式（精确/压缩）下切分是重编码，耗时占绝对主导 */
+export const RECODE_WEIGHTS: ProgressWeights = { cut: 0.97, concat: 0.03 }
 
 /**
  * 计算整体进度比例。
