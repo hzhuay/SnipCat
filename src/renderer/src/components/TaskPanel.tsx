@@ -1,5 +1,7 @@
-import type { TaskState } from '@shared/types'
+import { useCallback, useEffect, useState } from 'react'
+import type { CacheUsage, TaskState } from '@shared/types'
 import { formatCompact } from '@shared/time'
+import { formatBytes } from '@shared/probe'
 
 const STATUS_TEXT: Record<TaskState['status'], string> = {
   queued: '排队中',
@@ -18,6 +20,53 @@ function filenameOf(p: string): string {
 /** 可取消的任务（本次会话正在跑的） */
 function cancellable(t: TaskState): boolean {
   return Boolean(t.jobId) && (t.status === 'queued' || t.status === 'running' || t.status === 'paused')
+}
+
+/**
+ * 缓存清理条：展示系统临时目录下残留的中间产物占用（正常任务结束会自动清，
+ * 这里给用户一个可见的兜底手段），支持一键清理。
+ */
+function CacheBar() {
+  const [usage, setUsage] = useState<CacheUsage | null>(null)
+  const [clearing, setClearing] = useState(false)
+
+  const refresh = useCallback(() => {
+    void window.api.getCacheUsage().then(setUsage)
+  }, [])
+
+  useEffect(() => {
+    refresh()
+  }, [refresh])
+
+  const handleClear = useCallback(async () => {
+    setClearing(true)
+    try {
+      await window.api.clearCache()
+    } finally {
+      setClearing(false)
+      refresh()
+    }
+  }, [refresh])
+
+  if (!usage || usage.dirCount === 0) {
+    return (
+      <div className="row cache-bar dim" style={{ marginBottom: 10 }}>
+        <span>缓存占用：0 B（无残留临时文件）</span>
+      </div>
+    )
+  }
+
+  return (
+    <div className="row cache-bar" style={{ marginBottom: 10 }}>
+      <span className="dim">
+        缓存占用：{formatBytes(usage.bytes)}（{usage.dirCount} 个残留临时目录）
+      </span>
+      <div className="spacer" />
+      <button onClick={() => void handleClear()} disabled={clearing}>
+        {clearing ? '清理中…' : '清理缓存'}
+      </button>
+    </div>
+  )
 }
 
 /**
@@ -45,6 +94,7 @@ export function TaskPanel({
     return (
       <div className="panel">
         <div className="panel-title">后台任务</div>
+        <CacheBar />
         <div className="dim" style={{ padding: '8px 0' }}>
           还没有压缩任务。选好时间段后切换「压缩」模式并点「开始处理」，任务会在这里排队执行；
           中途关闭软件后任务保留，可一键重新运行。
@@ -62,6 +112,8 @@ export function TaskPanel({
         <div className="spacer" />
         <span className="dim">重新运行会保留时间段配置，从起点重新压缩</span>
       </div>
+
+      <CacheBar />
 
       {tasks.map((t) => (
         <div className="queue-item" key={t.id}>

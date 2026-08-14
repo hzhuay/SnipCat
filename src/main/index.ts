@@ -1,7 +1,9 @@
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { app, BrowserWindow, shell } from 'electron'
 import { registerIpc, shutdownJobs } from './ipc'
 import { registerMediaProtocol, registerMediaSchemePrivileges } from './mediaProtocol'
+import { cleanupOrphanTmpDirs } from './ffmpeg/tmpCleanup'
 
 // 必须在 app ready 之前声明协议权限
 registerMediaSchemePrivileges()
@@ -48,6 +50,13 @@ function createWindow(): void {
 }
 
 void app.whenReady().then(() => {
+  // 清理上次异常退出遗留的临时中间产物；失败不阻塞启动
+  try {
+    cleanupOrphanTmpDirs(tmpdir())
+  } catch {
+    // 尽力而为，下次启动再试
+  }
+
   registerMediaProtocol()
   registerIpc(() => mainWindow)
   createWindow()

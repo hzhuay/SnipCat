@@ -223,3 +223,12 @@ export interface EnvStatus {
 
 /** 输出路径已存在时的处理方式 */
 export type OverwritePolicy = 'overwrite' | 'rename'
+
+/** 系统临时目录下孤儿中间产物的占用情况 */
+export interface CacheUsage {
+  /** 残留目录数 */
+  dirCount: number
+  /** 总大小（字节） */
+  bytes: number
+}
+

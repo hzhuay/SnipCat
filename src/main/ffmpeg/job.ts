@@ -21,12 +21,13 @@ import { logError, logInfo } from '../log'
 import { requireBinaries } from './locate'
 import { snapSegments } from './keyframes'
 import { CanceledError, FFmpegError, ProcessHandle, runChecked } from './runner'
+import { TMP_DIR_PREFIX } from './tmpCleanup'
 
 export type EventSink = (e: JobEvent) => void
 
 /** 建一个本次任务专属的临时目录。放系统临时目录而不是源视频目录，避免污染工作目录。 */
 function makeTmpDir(): string {
-  return mkdtempSync(join(tmpdir(), 'videocut-'))
+  return mkdtempSync(join(tmpdir(), TMP_DIR_PREFIX))
 }
 
 function cleanup(dir: string): void {
@@ -97,7 +98,7 @@ export async function planJob(req: JobRequest): Promise<CommandSpec[]> {
   } catch {
     // 保持未吸附状态，命令里的 -ss 会是用户输入的原始时间
   }
-  const tmpDir = join(tmpdir(), 'videocut-<临时目录>')
+  const tmpDir = join(tmpdir(), `${TMP_DIR_PREFIX}<临时目录>`)
   const { commands } = buildJobCommands(
     resolved.input,
     resolved.segments,

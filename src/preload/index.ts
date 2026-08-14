@@ -7,6 +7,7 @@
 
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type {
+  CacheUsage,
   CommandSpec,
   CompressEncoder,
   CutMode,
@@ -111,6 +112,14 @@ const api = {
 
   checkOutput: (outputPath: string): Promise<OutputCheck> =>
     ipcRenderer.invoke('output:check', outputPath),
+
+  // ── 缓存清理 ──
+
+  /** 查看残留的孤儿临时目录占用（不删除） */
+  getCacheUsage: (): Promise<CacheUsage> => ipcRenderer.invoke('cache:usage'),
+
+  /** 清理残留的孤儿临时目录，返回释放的字节数 */
+  clearCache: (): Promise<{ freedBytes: number }> => ipcRenderer.invoke('cache:clear'),
 
   /**
    * 订阅任务事件。返回取消订阅函数。

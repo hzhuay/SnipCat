@@ -6,8 +6,9 @@
  */
 
 import { existsSync } from 'node:fs'
-import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
-import type { JobRequest, PersistedSession, PersistedTask, VideoMeta } from '@shared/types'
+import { tmpdir } from 'node:os'
+import { BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent } from 'electron'
+import type { CacheUsage, JobRequest, PersistedSession, PersistedTask, VideoMeta } from '@shared/types'
 import { renderCommandLine } from '@shared/commands'
 import { resolveOutputPath } from '@shared/output'
 import { parseTime } from '@shared/time'
@@ -19,12 +20,45 @@ import { probeVideo } from './ffmpeg/probe'
 import { snapSegments } from './ffmpeg/keyframes'
 import { planJob } from './ffmpeg/job'
 import { JobScheduler } from './ffmpeg/scheduler'
+import { FFmpegError } from './ffmpeg/runner'
+import { cleanupOrphanTmpDirs, scanOrphanTmpDirs } from './ffmpeg/tmpCleanup'
 import { allowMediaPath, toMediaUrl } from './mediaProtocol'
 
 /** 文件选择对话框的过滤器 */
 const VIDEO_EXTS = [
   'mp4', 'mkv', 'mov', 'm4v', 'avi', 'webm', 'flv', 'wmv', 'ts', 'mts', 'm2ts', 'mpg', 'mpeg', '3gp',
 ]
+
+/**
+ * 把 handler 抛出的任意值归一化成可安全跨 IPC 传输的错误。
+ *
+ * Electron 对 handler 抛出的 Error 实例只序列化 message/stack，自定义字段
+ * （如 FFmpegError.stderrTail）会丢失；抛普通对象则走结构化克隆，字段完整
+ * 保留。所以这里统一转成 plain object 而非 Error 子类实例。
+ */
+export function toIpcError(e: unknown): { name: string; message: string; stderrTail?: string[] } {
+  if (e instanceof FFmpegError) {
+    return { name: e.name, message: e.message, stderrTail: e.stderrTail }
+  }
+  if (e instanceof Error) {
+    return { name: e.name, message: e.message }
+  }
+  return { name: 'Error', message: String(e) }
+}
+
+/** ipcMain.handle 的包装：捕获 handler 抛出的任意错误，统一归一化后再抛出 */
+function handle<Args extends unknown[], R>(
+  channel: string,
+  fn: (e: IpcMainInvokeEvent, ...args: Args) => R | Promise<R>
+): void {
+  ipcMain.handle(channel, async (e, ...args: Args) => {
+    try {
+      return await fn(e, ...args)
+    } catch (err) {
+      throw toIpcError(err)
+    }
+  })
+}
 
 /** 任务调度器：前台流复制 + 后台压缩队列 */
 let scheduler: JobScheduler | null = null
@@ -60,7 +94,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     },
   })
 
-  ipcMain.handle('env:check', async (_e, force?: boolean) => {
+  handle('env:check', async (_e, force?: boolean) => {
     if (force) invalidateEnvCache()
     const env = await locateBinaries(force === true)
     logInfo(
@@ -71,11 +105,11 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
   })
 
   /** 编码器可用性（是否有 av1_amf 硬件编码器），带缓存 */
-  ipcMain.handle('env:encoders', async (_e, force?: boolean) => {
+  handle('env:encoders', async (_e, force?: boolean) => {
     return detectEncoderSupport(force === true)
   })
 
-  ipcMain.handle('dialog:pickVideo', async () => {
+  handle('dialog:pickVideo', async () => {
     const win = getWindow()
     const options = {
       title: '选择视频文件',
@@ -93,21 +127,21 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     return r.filePaths[0]
   })
 
-  ipcMain.handle('video:probe', async (_e, filePath: string): Promise<VideoMeta> => {
+  handle('video:probe', async (_e, filePath: string): Promise<VideoMeta> => {
     const meta = await probeVideo(filePath)
     // 探测成功即视为用户显式选择，加入 media:// 白名单供预览播放
     allowMediaPath(filePath)
     return meta
   })
 
-  ipcMain.handle('video:mediaUrl', (_e, filePath: string) => toMediaUrl(filePath))
+  handle('video:mediaUrl', (_e, filePath: string) => toMediaUrl(filePath))
 
   /**
    * 批量求切点吸附结果，供 UI 在执行前就显示真实切点与偏移。
    *
    * 键用「起点_终点」的字符串，因为 IPC 无法传 Map，而起点终点要成对返回。
    */
-  ipcMain.handle(
+  handle(
     'video:snap',
     async (
       _e,
@@ -123,12 +157,12 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
    * Dry-run：只构造命令，不执行任何写操作。
    * 同时返回渲染好的命令行文本，Dry-run 面板直接展示、可复制。
    */
-  ipcMain.handle('job:plan', async (_e, req: JobRequest) => {
+  handle('job:plan', async (_e, req: JobRequest) => {
     const commands = await planJob(req)
     return commands.map((c) => ({ ...c, line: renderCommandLine(c) }))
   })
 
-  ipcMain.handle('job:start', (_e, req: JobRequest) => {
+  handle('job:start', (_e, req: JobRequest) => {
     if (!scheduler || !taskStore) throw new Error('调度器未初始化')
     // 自动识别重复任务：同源视频 + 同后缀的压缩任务已在排队/执行时拒绝重复提交
     if (req.mode === 'compress' && taskStore.hasActiveDuplicate(req)) {
@@ -140,19 +174,19 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     return r
   })
 
-  ipcMain.handle('job:cancel', (_e, jobId: string) => {
+  handle('job:cancel', (_e, jobId: string) => {
     scheduler?.cancel(jobId)
   })
 
   /** 队列快照：渲染层重载后恢复前台/后台任务的视图 */
-  ipcMain.handle('job:queueSnapshot', () => {
+  handle('job:queueSnapshot', () => {
     if (!scheduler) throw new Error('调度器未初始化')
     return scheduler.getSnapshot()
   })
 
   // ── 后台任务持久化 ──────────────────────
 
-  ipcMain.handle('task:list', () => {
+  handle('task:list', () => {
     if (!taskStore) throw new Error('任务存储未初始化')
     return taskStore.list()
   })
@@ -161,7 +195,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
    * 重新运行已保存的压缩任务：重新探测源视频，用保存的起终点重新入队。
    * 不从中断处续传（AV1 无法单次断点续传），但配置完整保留，无需重设。
    */
-  ipcMain.handle('task:resume', async (_e, taskId: string) => {
+  handle('task:resume', async (_e, taskId: string) => {
     if (!scheduler || !taskStore) throw new Error('调度器未初始化')
     const task = taskStore.get(taskId)
     if (!task) throw new Error(`任务不存在：${taskId}`)
@@ -187,12 +221,12 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     return r
   })
 
-  ipcMain.handle('task:delete', (_e, taskId: string) => {
+  handle('task:delete', (_e, taskId: string) => {
     taskStore?.delete(taskId)
   })
 
   /** 载入编辑：把任务的时间段/mode/后缀/编码器恢复到编辑器，供微调后再跑 */
-  ipcMain.handle('task:loadIntoEditor', (_e, taskId: string) => {
+  handle('task:loadIntoEditor', (_e, taskId: string) => {
     const task = taskStore?.get(taskId)
     if (!task) throw new Error(`任务不存在：${taskId}`)
     return {
@@ -206,17 +240,17 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
 
   // ── 编辑会话持久化（下次打开自动恢复时间段） ──
 
-  ipcMain.handle('session:save', (_e, session: PersistedSession) => {
+  handle('session:save', (_e, session: PersistedSession) => {
     saveJson('session.json', session)
   })
 
-  ipcMain.handle('session:load', () => loadJson<PersistedSession | null>('session.json', null))
+  handle('session:load', () => loadJson<PersistedSession | null>('session.json', null))
 
-  ipcMain.handle('session:clear', () => {
+  handle('session:clear', () => {
     saveJson('session.json', null)
   })
 
-  ipcMain.handle('shell:reveal', (_e, filePath: string) => {
+  handle('shell:reveal', (_e, filePath: string) => {
     shell.showItemInFolder(filePath)
   })
 
@@ -225,8 +259,26 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
    * 不静默覆盖用户目录里的文件 —— 由 UI 让用户明确选择。
    * 与调度器共用 resolveOutputPath，保证改名规则两端一致。
    */
-  ipcMain.handle('output:check', (_e, outputPath: string) => {
+  handle('output:check', (_e, outputPath: string) => {
     const exists = existsSync(outputPath)
     return { exists, alternative: resolveOutputPath(outputPath, existsSync) }
+  })
+
+  // ── 缓存清理 ──────────────────────
+  // 缓存范围仅指系统临时目录下残留的中间产物（正常任务结束会自动清，这里是
+  // 用户可见的保险手段）；session.json / tasks.json 是应用状态而非缓存，
+  // 不在清理范围内，避免用户误删任务历史。
+
+  /** 查看当前残留的孤儿临时目录占用，仅扫描不删除 */
+  handle('cache:usage', (): CacheUsage => {
+    const { dirs, totalBytes } = scanOrphanTmpDirs(tmpdir())
+    return { dirCount: dirs.length, bytes: totalBytes }
+  })
+
+  /** 清理残留的孤儿临时目录，返回释放的字节数 */
+  handle('cache:clear', (): { freedBytes: number } => {
+    const freedBytes = cleanupOrphanTmpDirs(tmpdir())
+    if (freedBytes > 0) logInfo(`清理缓存：释放 ${freedBytes} 字节`)
+    return { freedBytes }
   })
 }

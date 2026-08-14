@@ -132,7 +132,7 @@ node out/tools/verify-idempotent.mjs <视频>   # 吸附幂等性
 - mkv 上若输入时间落在关键帧后 0.15 秒内，实际会比界面显示的多切一格。方向是向外多切，符合「宁可多切不要缺」的取舍
 - 多段拼接处可能有几十毫秒的音画对齐抖动
 - 内置预览只能播 Chromium 支持的编码（H.264 / VP9 / AV1）；HEVC、ProRes 会降级为「无法预览」提示，但切分功能不受影响（切分靠 ffmpeg，不靠 Chromium）
-- 主要在 Windows 上开发验证；macOS 上的后台任务挂起（NtSuspendProcess 为 Windows 专属，macOS 上仅降级为普通排队）尚未在真机确认
+- 主要在 Windows 上开发验证；macOS/Linux 上的后台任务挂起改用 SIGSTOP/SIGCONT 实现，尚未在真机做完整场景验证
 
 ## 技术栈
 
