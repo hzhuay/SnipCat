@@ -15,6 +15,7 @@ import type {
   JobEvent,
   JobRequest,
   LogEntry,
+  PersistedPrefs,
   PersistedSession,
   QueueSnapshot,
   TaskState,
@@ -79,6 +80,10 @@ const api = {
 
   deleteTask: (taskId: string): Promise<void> => ipcRenderer.invoke('task:delete', taskId),
 
+  deleteSource: (taskId: string): Promise<void> => ipcRenderer.invoke('task:deleteSource', taskId),
+
+  clearFinished: (): Promise<TaskState[]> => ipcRenderer.invoke('task:clearFinished'),
+
   loadTaskIntoEditor: (
     taskId: string
   ): Promise<{
@@ -97,6 +102,10 @@ const api = {
   loadSession: (): Promise<PersistedSession | null> => ipcRenderer.invoke('session:load'),
 
   clearSession: (): Promise<void> => ipcRenderer.invoke('session:clear'),
+
+  loadPrefs: (): Promise<PersistedPrefs | null> => ipcRenderer.invoke('prefs:load'),
+
+  savePrefs: (prefs: PersistedPrefs): Promise<void> => ipcRenderer.invoke('prefs:save', prefs),
 
   /**
    * 订阅后台任务列表更新（task:event 推送完整任务）。

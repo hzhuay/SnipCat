@@ -49,6 +49,26 @@ describe('store reducer：时间段编辑', () => {
     expect(next.segments[0].startRaw).toBe('')
   })
 
+  it('prefs/loaded 应用模式与编码器偏好，后缀跟随模式默认值', () => {
+    const next = reducer(initialState, {
+      type: 'prefs/loaded',
+      prefs: { mode: 'copy', encoder: 'svtav1' },
+    })
+    expect(next.mode).toBe('copy')
+    expect(next.encoder).toBe('svtav1')
+    expect(next.suffix).toBe('_cut')
+  })
+
+  it('prefs/loaded 默认压缩模式时后缀为 _cut_compressed', () => {
+    const next = reducer(initialState, {
+      type: 'prefs/loaded',
+      prefs: { mode: 'compress', encoder: 'amf' },
+    })
+    expect(next.mode).toBe('compress')
+    expect(next.encoder).toBe('amf')
+    expect(next.suffix).toBe('_cut_compressed')
+  })
+
   it('session/restored 恢复时间段、mode 与 suffix（起终点重新解析）', () => {
     const next = reducer(initialState, {
       type: 'session/restored',

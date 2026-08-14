@@ -8,7 +8,14 @@
 import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent } from 'electron'
-import type { CacheUsage, JobRequest, PersistedSession, PersistedTask, VideoMeta } from '@shared/types'
+import type {
+  CacheUsage,
+  JobRequest,
+  PersistedPrefs,
+  PersistedSession,
+  PersistedTask,
+  VideoMeta,
+} from '@shared/types'
 import { renderCommandLine } from '@shared/commands'
 import { resolveOutputPath } from '@shared/output'
 import { parseTime } from '@shared/time'
@@ -225,6 +232,18 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     taskStore?.delete(taskId)
   })
 
+  /** 删除已完成任务的源视频文件（只允许 done；幂等，源已不存在视为成功） */
+  handle('task:deleteSource', async (_e, taskId: string) => {
+    if (!taskStore) throw new Error('任务存储未初始化')
+    await taskStore.deleteSource(taskId)
+  })
+
+  /** 清除所有已结束任务（done/error/canceled），返回剩余列表供渲染层刷新 */
+  handle('task:clearFinished', () => {
+    if (!taskStore) throw new Error('任务存储未初始化')
+    return taskStore.clearFinished()
+  })
+
   /** 载入编辑：把任务的时间段/mode/后缀/编码器恢复到编辑器，供微调后再跑 */
   handle('task:loadIntoEditor', (_e, taskId: string) => {
     const task = taskStore?.get(taskId)
@@ -248,6 +267,14 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
 
   handle('session:clear', () => {
     saveJson('session.json', null)
+  })
+
+  // ── 用户偏好持久化（模式 + 编码器，与会话解耦，启动即应用） ──
+
+  handle('prefs:load', () => loadJson<PersistedPrefs | null>('prefs.json', null))
+
+  handle('prefs:save', (_e, prefs: PersistedPrefs) => {
+    saveJson('prefs.json', prefs)
   })
 
   handle('shell:reveal', (_e, filePath: string) => {

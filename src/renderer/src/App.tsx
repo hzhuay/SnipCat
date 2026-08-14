@@ -41,9 +41,15 @@ export function App() {
     void window.api.checkEnv().then((e) => dispatch({ type: 'env/loaded', env: e }))
   }, [dispatch])
 
-  // 探测硬件 AV1 编码器是否可用，决定「编码器」选项里硬件项能否选
+  // 探测硬件 AV1 编码器是否可用，决定「编码器」选项里硬件项能否选。
+  // 默认编码器是 amf（硬件优先），但机器上没有 av1_amf 时回退软件 svtav1，
+  // 否则默认状态下直接运行会因找不到编码器失败。
   useEffect(() => {
-    void window.api.checkEncoders().then((enc) => setAmfAvailable(Boolean(enc.amf)))
+    void window.api.checkEncoders().then((enc) => {
+      const hasAmf = Boolean(enc.amf)
+      setAmfAvailable(hasAmf)
+      if (!hasAmf) dispatch({ type: 'encoder/set', encoder: 'svtav1' })
+    })
   }, [])
 
   // 订阅任务事件：只用 ref 读最新前台 jobId，把前台任务的事件交给 ProgressPanel；
@@ -66,12 +72,17 @@ export function App() {
     return window.api.onLogEvent((entry) => dispatch({ type: 'log/add', entry }))
   }, [dispatch])
 
-  // 挂载：载入已保存的后台任务 + 恢复上次编辑会话（时间段自动找回）
+  // 挂载：载入已保存的后台任务 + 用户偏好 + 恢复上次编辑会话（时间段自动找回）
   useEffect(() => {
     void window.api
       .listTasks()
       .then((tasks) => dispatch({ type: 'task/list', tasks }))
       .catch(() => undefined)
+
+    // 用户偏好（模式 + 编码器）先于会话恢复应用；会话恢复若存在会覆盖为当时的模式
+    void window.api.loadPrefs().then((prefs) => {
+      if (prefs) dispatch({ type: 'prefs/loaded', prefs })
+    })
 
     void window.api.loadSession().then(async (session) => {
       if (!session) return
@@ -109,6 +120,17 @@ export function App() {
     }, 600)
     return () => clearTimeout(timer)
   }, [meta, segments, mode, suffix, encoder])
+
+  // 用户偏好自动保存：模式 + 编码器改动即落盘（跳过首次挂载，避免覆盖刚加载的偏好）。
+  // 与会话解耦 —— 即使没加载视频或视频已删除，偏好也不丢。
+  const firstPrefsSave = useRef(true)
+  useEffect(() => {
+    if (firstPrefsSave.current) {
+      firstPrefsSave.current = false
+      return
+    }
+    void window.api.savePrefs({ mode, encoder })
+  }, [mode, encoder])
 
   const validation = useMemo(() => validateSegments(segments, meta), [segments, meta])
 
@@ -429,6 +451,10 @@ export function App() {
           onLoad={(taskId) => void loadTaskIntoEditor(taskId)}
           onDelete={(taskId) =>
             void window.api.deleteTask(taskId).then(() => dispatch({ type: 'task/delete', taskId }))
+          }
+          onDeleteSource={(taskId) => void window.api.deleteSource(taskId)}
+          onClearFinished={() =>
+            void window.api.clearFinished().then((list) => dispatch({ type: 'task/list', tasks: list }))
           }
         />
       )}

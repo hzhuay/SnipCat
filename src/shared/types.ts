@@ -132,7 +132,9 @@ export type JobStatus = 'queued' | 'running' | 'paused' | 'done' | 'error' | 'ca
 /** 持久化任务的状态（interrupted = 应用退出时被打断，等待重新运行） */
 export type TaskStatus = JobStatus | 'interrupted'
 
-/** 持久化的后台压缩任务（只存压缩任务，不存前台流复制） */
+/**
+ * 持久化的任务（流复制 + 压缩都存；流复制秒级完成，重启后同样保留，供删除源视频）。
+ */
 export interface PersistedTask {
   /** 稳定 id，跨会话不变（重启后重新运行复用同一个 id） */
   id: string
@@ -146,6 +148,8 @@ export interface PersistedTask {
   createdAt: number
   status: TaskStatus
   error?: string
+  /** 用户已通过任务列表删除了原视频（输出仍在，源文件已不在磁盘） */
+  sourceDeleted?: boolean
 }
 
 /** 编辑会话（当前工作状态），下次打开自动恢复时间段 */
@@ -156,6 +160,15 @@ export interface PersistedSession {
   suffix: string
   encoder: CompressEncoder
   updatedAt: number
+}
+
+/**
+ * 用户偏好（跨会话持久）：模式与编码器，与当前编辑的视频解耦。
+ * 修改即保存、启动即应用 —— 即使没加载视频或视频已删除，偏好也不丢。
+ */
+export interface PersistedPrefs {
+  mode: CutMode
+  encoder: CompressEncoder
 }
 
 /** 渲染层看到的任务（持久化字段 + 实时进度；jobId 仅本次会话有效，供取消） */

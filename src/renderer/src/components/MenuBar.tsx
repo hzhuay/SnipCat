@@ -3,7 +3,7 @@ export type View = 'workflow' | 'tasks' | 'logs'
 
 const MENU: Array<{ key: View; label: string }> = [
   { key: 'workflow', label: '编辑' },
-  { key: 'tasks', label: '后台任务' },
+  { key: 'tasks', label: '任务列表' },
   { key: 'logs', label: '日志' },
 ]
 

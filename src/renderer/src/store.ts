@@ -91,9 +91,10 @@ export const initialState: State = {
   probing: false,
   probeError: null,
   segments: [newSegment()],
-  mode: 'copy',
-  encoder: 'svtav1',
-  suffix: '_cut',
+  // 默认压缩模式 + 硬件 AV1（AMF）：速度优先；amf 不可用时 App 会回退 svtav1
+  mode: 'compress',
+  encoder: 'amf',
+  suffix: '_cut_compressed',
   // 开发期默认勾选：mac 上没有 ffmpeg，先看命令
   dryRun: false,
   job: emptyJob,
@@ -120,6 +121,7 @@ export type Action =
   | { type: 'seg/applySnaps'; snaps: Array<{ startSec: number; endSec: number }>; ids: string[] }
   | { type: 'mode/set'; mode: CutMode }
   | { type: 'encoder/set'; encoder: CompressEncoder }
+  | { type: 'prefs/loaded'; prefs: { mode: CutMode; encoder: CompressEncoder } }
   | { type: 'suffix/set'; suffix: string }
   | { type: 'dryRun/set'; value: boolean }
   | { type: 'plan/start' }
@@ -301,6 +303,16 @@ export function reducer(state: State, action: Action): State {
 
     case 'encoder/set':
       return { ...state, encoder: action.encoder, plan: null }
+
+    case 'prefs/loaded':
+      // 启动时应用用户偏好：模式 + 编码器；后缀跟随模式到对应默认值
+      // （随后若有编辑会话恢复，会用会话里的值再覆盖一遍）
+      return {
+        ...state,
+        mode: action.prefs.mode,
+        encoder: action.prefs.encoder,
+        suffix: DEFAULT_SUFFIX[action.prefs.mode],
+      }
 
     case 'suffix/set':
       return { ...state, suffix: action.suffix, plan: null }

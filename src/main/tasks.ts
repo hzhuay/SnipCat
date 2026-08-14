@@ -11,11 +11,22 @@
  * 与 Electron 解耦（storage 注入），方便单测。
  */
 
+import { unlink } from 'node:fs/promises'
 import type { JobEvent, JobRequest, PersistedTask, TaskState } from '@shared/types'
 
 export interface TaskStorage {
   loadTasks(): PersistedTask[]
   saveTasks(tasks: PersistedTask[]): void
+}
+
+/** 默认删除源文件：文件已不存在（ENOENT）视为已删除，幂等不报错 */
+async function defaultDeleteFile(path: string): Promise<void> {
+  try {
+    await unlink(path)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return
+    throw err
+  }
 }
 
 /** 终态：不会再变化，退出时无需标记 interrupted */
@@ -27,14 +38,18 @@ export class TaskStore {
   private seq = 0
   private storage: TaskStorage
   private broadcast: (task: TaskState) => void
+  private deleteFile: (path: string) => Promise<void>
 
   constructor(opts: {
     storage: TaskStorage
     /** 每次任务状态变化时推送完整任务给渲染层 */
     broadcast: (task: TaskState) => void
+    /** 删除源视频文件（测试注入 mock）；默认 fs.unlink，文件已不存在视为成功 */
+    deleteFile?: (path: string) => Promise<void>
   }) {
     this.storage = opts.storage
     this.broadcast = opts.broadcast
+    this.deleteFile = opts.deleteFile ?? defaultDeleteFile
   }
 
   /** 启动时从磁盘读入，并让新任务 id 从已有最大值续号 */
@@ -113,6 +128,37 @@ export class TaskStore {
       if (id === taskId) this.jobToTask.delete(jobId)
     }
     this.storage.saveTasks(this.persistable())
+  }
+
+  /**
+   * 删除已完成任务的源视频（输出已生成，删源才安全）。
+   * 只允许 done 状态；删后标 sourceDeleted，重新运行/载入编辑将被禁用。
+   * 幂等：源文件已不存在视为已删除。
+   */
+  async deleteSource(taskId: string): Promise<void> {
+    const task = this.get(taskId)
+    if (!task) throw new Error(`任务不存在：${taskId}`)
+    if (task.status !== 'done') throw new Error('只有已完成的任务才能删除原视频')
+    if (task.sourceDeleted) throw new Error('原视频已删除')
+    await this.deleteFile(task.inputPath)
+    task.sourceDeleted = true
+    this.commit(task, true)
+  }
+
+  /**
+   * 清除所有已结束的任务（done/error/canceled）。interrupted 保留（等待重新运行）。
+   * 返回剩余列表，渲染层用它刷新视图。
+   */
+  clearFinished(): TaskState[] {
+    const removed = this.tasks.filter((t) => TERMINAL.has(t.status))
+    if (removed.length === 0) return this.tasks
+    const removedIds = new Set(removed.map((t) => t.id))
+    for (const [jobId, id] of this.jobToTask) {
+      if (removedIds.has(id)) this.jobToTask.delete(jobId)
+    }
+    this.tasks = this.tasks.filter((t) => !TERMINAL.has(t.status))
+    this.storage.saveTasks(this.persistable())
+    return this.tasks
   }
 
   /** 应用退出：把非终态任务标 interrupted（内存调度器已丢，等待下次重新运行） */
