@@ -27,6 +27,19 @@ function hasFinished(tasks: TaskState[]): boolean {
   return tasks.some((t) => t.status === 'done' || t.status === 'error' || t.status === 'canceled')
 }
 
+/** 暂停任务的提示文案，按原因区分 */
+function pausedHint(t: TaskState): string {
+  switch (t.pausedReason) {
+    case 'game':
+      return '检测到游戏运行中，已暂停（退出游戏自动恢复）'
+    case 'manual':
+      return '已手动暂停'
+    case 'fg':
+    default:
+      return '前台处理中，完成后自动继续'
+  }
+}
+
 /**
  * 缓存清理条：展示系统临时目录下残留的中间产物占用（正常任务结束会自动清，
  * 这里给用户一个可见的兜底手段），支持一键清理。
@@ -83,6 +96,8 @@ function CacheBar() {
 export function TaskPanel({
   tasks,
   onCancel,
+  onPause,
+  onResumeJob,
   onReveal,
   onResume,
   onLoad,
@@ -92,6 +107,9 @@ export function TaskPanel({
 }: {
   tasks: TaskState[]
   onCancel: (jobId: string) => void
+  /** 手动暂停 / 恢复运行中的后台压缩任务 */
+  onPause: (jobId: string) => void
+  onResumeJob: (jobId: string) => void
   onReveal: (outputPath: string) => void
   onResume: (taskId: string) => void
   onLoad: (taskId: string) => void
@@ -128,6 +146,7 @@ export function TaskPanel({
 
       {tasks.map((t) => {
         const sourceGone = Boolean(t.sourceDeleted)
+        const jobId = t.jobId
         return (
           <div className="queue-item" key={t.id}>
             <div className="row">
@@ -139,11 +158,19 @@ export function TaskPanel({
               {t.status === 'running' && t.etaSec !== undefined && (
                 <span className="dim">剩余约 {formatCompact(t.etaSec)}</span>
               )}
-              {t.status === 'paused' && <span className="dim">前台处理中，完成后自动继续</span>}
+              {t.status === 'paused' && (
+                <span className="dim">{pausedHint(t)}</span>
+              )}
               {t.status === 'interrupted' && (
                 <span className="dim">上次被中断（{Math.round(t.ratio * 100)}%）</span>
               )}
-              {cancellable(t) && <button onClick={() => t.jobId && onCancel(t.jobId)}>取消</button>}
+              {t.status === 'running' && jobId && (
+                <button onClick={() => onPause(jobId)}>暂停</button>
+              )}
+              {t.status === 'paused' && t.pausedReason === 'manual' && jobId && (
+                <button onClick={() => onResumeJob(jobId)}>恢复</button>
+              )}
+              {cancellable(t) && <button onClick={() => jobId && onCancel(jobId)}>取消</button>}
               {t.status === 'done' && <button onClick={() => onReveal(t.outputPath)}>显示</button>}
               {t.status === 'done' &&
                 (sourceGone ? (

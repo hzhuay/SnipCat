@@ -9,6 +9,7 @@ import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { ProgressParser } from '@shared/progress'
 import { logInfo } from '../log'
 import { resumePid, suspendPid } from './suspend'
+import { throttlePid, unthrottlePid } from './throttle'
 
 /** stderr 保留的尾部行数：ffmpeg 的真实错误几乎总在末尾 */
 const STDERR_TAIL_LINES = 20
@@ -58,6 +59,7 @@ export class ProcessHandle {
   private current: ChildProcess | null = null
   private canceled = false
   private suspended = false
+  private throttled = false
 
   attach(child: ChildProcess): void {
     if (this.canceled) {
@@ -69,6 +71,10 @@ export class ProcessHandle {
     if (this.suspended) {
       // 挂起发生在两条命令之间：新起的进程立即挂起，不等它先跑起来
       void suspendPid(child.pid!)
+    }
+    if (this.throttled) {
+      // 降级发生在两条命令之间：新起的进程立即降级
+      void throttlePid(child.pid!)
     }
     this.current = child
   }
@@ -99,6 +105,20 @@ export class ProcessHandle {
     this.suspended = false
     const pid = this.current?.pid
     return pid ? resumePid(pid) : Promise.resolve()
+  }
+
+  /** 降低当前子进程优先级（尽力而为）。无子进程时只置标志，下一条命令 attach 时立即降级 */
+  throttle(): Promise<void> {
+    this.throttled = true
+    const pid = this.current?.pid
+    return pid ? throttlePid(pid) : Promise.resolve()
+  }
+
+  /** 恢复当前子进程优先级（尽力而为）。 */
+  unthrottle(): Promise<void> {
+    this.throttled = false
+    const pid = this.current?.pid
+    return pid ? unthrottlePid(pid) : Promise.resolve()
   }
 
   get isCanceled(): boolean {

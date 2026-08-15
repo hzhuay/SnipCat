@@ -23,6 +23,9 @@ import { killAllManaged, ProcessHandle } from './runner'
 type Send = (jobId: string, event: JobEvent) => void
 type Runner = (entry: Entry, emit: (e: JobEvent) => void) => Promise<void>
 
+/** 暂停来源：手动按钮 / 游戏自动检测 / 前台抢占 */
+export type PauseReason = 'manual' | 'game' | 'fg'
+
 /** 调度器内部的任务条目（running/paused 都指正在占用的轨道） */
 interface Entry {
   jobId: string
@@ -36,6 +39,10 @@ interface Entry {
   /** 累计被挂起的时间（秒），用于修正 ETA */
   pausedSec: number
   pauseAt: number | null
+  /** 用户手动暂停（任务级，开关） */
+  manualPaused: boolean
+  /** 当前生效的暂停原因（paused 时有效） */
+  pauseReason: PauseReason | null
 }
 
 export class JobScheduler {
@@ -47,6 +54,8 @@ export class JobScheduler {
   private claimed = new Set<string>()
   private seq = 0
   private shuttingDown = false
+  /** 检测到游戏在运行：对当前及后续所有后台任务降级 */
+  private gameActive = false
   private send: Send
   private run: Runner
 
@@ -76,6 +85,8 @@ export class JobScheduler {
       ratio: 0,
       pausedSec: 0,
       pauseAt: null,
+      manualPaused: false,
+      pauseReason: null,
     }
 
     // 磁盘占用由渲染层 output:check + 用户确认处理（覆盖或改名）；
@@ -124,6 +135,71 @@ export class JobScheduler {
     }
   }
 
+  /**
+   * 手动暂停一个运行中的任务（用户点按钮）。
+   *
+   * 通过降低进程优先级实现（throttle），不是冻结——ffmpeg 仍在写文件，安全；
+   * 只是几乎不吃 CPU。排队中/已结束的任务忽略（没有可降级的进程）。
+   */
+  pause(jobId: string): void {
+    if (this.bgCurrent?.jobId !== jobId) return
+    this.bgCurrent.manualPaused = true
+    this.syncPause(this.bgCurrent)
+  }
+
+  /** 恢复手动暂停的任务。仅当无其它暂停原因（游戏/前台抢占）时真正恢复。 */
+  resume(jobId: string): void {
+    if (this.bgCurrent?.jobId !== jobId) return
+    this.bgCurrent.manualPaused = false
+    this.syncPause(this.bgCurrent)
+  }
+
+  /**
+   * 游戏状态变化：开始游戏 → 降级当前及后续所有后台压缩；退出游戏 → 恢复。
+   * 这是全局开关（不针对单个任务），因为游戏期间新入队的任务也应自动降级。
+   */
+  setGameActive(active: boolean): void {
+    this.gameActive = active
+    if (this.bgCurrent) this.syncPause(this.bgCurrent)
+  }
+
+  /**
+   * 依据当前所有暂停原因（手动 / 游戏 / 前台抢占）统一推进任务状态：
+   * 同步降级、status、paused/resumed 事件。任何原因存在 → paused；全无 → running。
+   */
+  private syncPause(e: Entry): void {
+    const throttled = e.manualPaused || this.gameActive
+    const shouldPause = throttled || (this.bgPaused && this.bgCurrent === e)
+    const reason: PauseReason | null = shouldPause
+      ? this.currentPauseReason(e)
+      : null
+
+    if (throttled) void e.handle.throttle()
+    else void e.handle.unthrottle()
+
+    if (e.status !== 'paused' && shouldPause) {
+      e.status = 'paused'
+      e.pauseAt = Date.now()
+      e.pauseReason = reason
+      this.send(e.jobId, { type: 'paused', reason: reason! })
+    } else if (e.status === 'paused' && !shouldPause) {
+      this.markResumed(e)
+      e.pauseReason = null
+      this.send(e.jobId, { type: 'resumed' })
+    } else if (e.status === 'paused' && shouldPause && e.pauseReason !== reason) {
+      // 暂停原因变化（如手动暂停中又开了游戏）：更新 reason，保持 paused
+      e.pauseReason = reason
+      this.send(e.jobId, { type: 'paused', reason: reason! })
+    }
+  }
+
+  /** 当前生效的暂停原因（优先级：前台抢占 > 手动 > 游戏） */
+  private currentPauseReason(e: Entry): PauseReason {
+    if (this.bgPaused && this.bgCurrent === e) return 'fg'
+    if (e.manualPaused) return 'manual'
+    return 'game'
+  }
+
   /** 队列快照：渲染层重载后恢复视图 */
   getSnapshot(): QueueSnapshot {
     const list = this.bgCurrent ? [this.bgCurrent, ...this.bgQueue] : [...this.bgQueue]
@@ -164,9 +240,8 @@ export class JobScheduler {
 
     if (this.bgCurrent && !this.bgPaused) {
       this.bgPaused = true
-      this.markPaused(this.bgCurrent)
-      this.send(this.bgCurrent.jobId, { type: 'paused' })
       await this.bgCurrent.handle.suspend() // 尽力而为；失败则前后台短暂并发
+      this.syncPause(this.bgCurrent)
     }
 
     this.fgStarting = false
@@ -185,9 +260,8 @@ export class JobScheduler {
 
       if (this.bgCurrent && this.bgPaused) {
         this.bgPaused = false
-        this.markResumed(this.bgCurrent)
-        this.send(this.bgCurrent.jobId, { type: 'resumed' })
-        await this.bgCurrent.handle.resume() // 尽力而为；失败则后台保持挂起，用户可手动取消
+        await this.bgCurrent.handle.resume() // 先解除前台冻结；若还有手动/游戏暂停则保持降级
+        this.syncPause(this.bgCurrent)
       }
       this.drainBg()
     }
@@ -203,6 +277,8 @@ export class JobScheduler {
     next.status = 'running'
     logInfo(`后台任务开始：${next.outputPath}`)
     this.send(next.jobId, { type: 'started' })
+    // 游戏运行期间启动的任务：直接以降级优先级开始
+    if (this.gameActive) this.syncPause(next)
 
     try {
       await this.run(next, (e) => this.emit(next, e))
@@ -215,11 +291,6 @@ export class JobScheduler {
       this.claimed.delete(next.outputPath)
       this.drainBg()
     }
-  }
-
-  private markPaused(e: Entry): void {
-    e.status = 'paused'
-    e.pauseAt = Date.now()
   }
 
   private markResumed(e: Entry): void {

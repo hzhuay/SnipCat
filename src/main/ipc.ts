@@ -27,6 +27,7 @@ import { probeVideo } from './ffmpeg/probe'
 import { snapSegments } from './ffmpeg/keyframes'
 import { planJob } from './ffmpeg/job'
 import { JobScheduler } from './ffmpeg/scheduler'
+import { GameWatcher } from './gameWatcher'
 import { FFmpegError } from './ffmpeg/runner'
 import { cleanupOrphanTmpDirs, scanOrphanTmpDirs } from './ffmpeg/tmpCleanup'
 import { allowMediaPath, toMediaUrl } from './mediaProtocol'
@@ -71,9 +72,12 @@ function handle<Args extends unknown[], R>(
 let scheduler: JobScheduler | null = null
 /** 后台压缩任务的持久化列表 */
 let taskStore: TaskStore | null = null
+/** 游戏检测：游戏运行中自动降级后台压缩 */
+let gameWatcher: GameWatcher | null = null
 
 /** 应用退出时清理：杀光所有受管子进程，并把非终态任务标记为 interrupted */
 export function shutdownJobs(): void {
+  gameWatcher?.stop()
   scheduler?.shutdown()
   taskStore?.markInterrupted()
 }
@@ -100,6 +104,10 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
       taskStore?.onJobEvent(jobId, event)
     },
   })
+
+  // 游戏检测：开始游戏自动降级后台压缩，退出恢复
+  gameWatcher = new GameWatcher(scheduler)
+  gameWatcher.start()
 
   handle('env:check', async (_e, force?: boolean) => {
     if (force) invalidateEnvCache()
@@ -183,6 +191,16 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
 
   handle('job:cancel', (_e, jobId: string) => {
     scheduler?.cancel(jobId)
+  })
+
+  /** 手动暂停运行中的后台压缩任务（降优先级，不是冻结——文件写入安全） */
+  handle('job:pause', (_e, jobId: string) => {
+    scheduler?.pause(jobId)
+  })
+
+  /** 恢复手动暂停的后台压缩任务（游戏/前台抢占仍生效时保持暂停） */
+  handle('job:resume', (_e, jobId: string) => {
+    scheduler?.resume(jobId)
   })
 
   /** 队列快照：渲染层重载后恢复前台/后台任务的视图 */

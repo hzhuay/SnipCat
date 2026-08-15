@@ -213,4 +213,110 @@ describe('JobScheduler 队列调度', () => {
     await flush()
     expect(queuedPaths).toEqual(['D:/a.mp4', 'D:/a_2.mp4'])
   })
+
+  it('手动暂停运行中的压缩任务：paused → resume → 恢复 running', async () => {
+    const events: JobEvent[] = []
+    const started = deferred()
+    const release = deferred()
+    const sched = new JobScheduler({
+      send: (_j, e) => events.push(e),
+      run: async (entry, emit) => {
+        if (entry.req.mode === 'compress') {
+          started.resolve()
+          await release.promise
+          emit({ type: 'done', outputPath: entry.outputPath, elapsedSec: 5 })
+        }
+      },
+    })
+
+    const r = sched.start(req('compress', 'D:/a.mp4'))
+    await started.promise
+
+    sched.pause(r.jobId)
+    await flush()
+    const paused = events.find((e): e is Extract<JobEvent, { type: 'paused' }> => e.type === 'paused')
+    expect(paused).toBeDefined()
+    expect(paused?.reason).toBe('manual')
+
+    sched.resume(r.jobId)
+    await flush()
+    expect(events.some((e) => e.type === 'resumed')).toBe(true)
+
+    release.resolve()
+    await flush()
+    expect(events.filter((e) => e.type === 'done').length).toBe(1)
+  })
+
+  it('游戏激活时压缩任务自动降级；退出后恢复', async () => {
+    const events: JobEvent[] = []
+    const started = deferred()
+    const release = deferred()
+    const sched = new JobScheduler({
+      send: (_j, e) => events.push(e),
+      run: async (entry, emit) => {
+        if (entry.req.mode === 'compress') {
+          started.resolve()
+          await release.promise
+          emit({ type: 'done', outputPath: entry.outputPath, elapsedSec: 5 })
+        }
+      },
+    })
+
+    sched.start(req('compress', 'D:/a.mp4'))
+    await started.promise
+
+    sched.setGameActive(true)
+    await flush()
+    const paused = events.find((e): e is Extract<JobEvent, { type: 'paused' }> => e.type === 'paused')
+    expect(paused?.reason).toBe('game')
+
+    sched.setGameActive(false)
+    await flush()
+    expect(events.some((e) => e.type === 'resumed')).toBe(true)
+
+    release.resolve()
+    await flush()
+    expect(events.filter((e) => e.type === 'done').length).toBe(1)
+  })
+
+  it('手动暂停叠加游戏激活：先恢复手动，游戏仍保持暂停；游戏退出才真正恢复', async () => {
+    const events: JobEvent[] = []
+    const started = deferred()
+    const release = deferred()
+    const sched = new JobScheduler({
+      send: (_j, e) => events.push(e),
+      run: async (entry, emit) => {
+        if (entry.req.mode === 'compress') {
+          started.resolve()
+          await release.promise
+          emit({ type: 'done', outputPath: entry.outputPath, elapsedSec: 5 })
+        }
+      },
+    })
+
+    const r = sched.start(req('compress', 'D:/a.mp4'))
+    await started.promise
+
+    sched.pause(r.jobId) // 手动暂停
+    sched.setGameActive(true) // 再叠加游戏
+    await flush()
+    expect(events.filter((e) => e.type === 'paused').length).toBe(1)
+
+    sched.resume(r.jobId) // 解除手动暂停
+    await flush()
+    // 游戏仍激活：任务应保持暂停，不出现 resumed
+    expect(events.filter((e) => e.type === 'resumed').length).toBe(0)
+    const pausedEvents = events.filter(
+      (e): e is Extract<JobEvent, { type: 'paused' }> => e.type === 'paused'
+    )
+    expect(pausedEvents[pausedEvents.length - 1]?.reason).toBe('game')
+
+    sched.setGameActive(false) // 游戏退出
+    await flush()
+    expect(events.filter((e) => e.type === 'resumed').length).toBe(1)
+
+    release.resolve()
+    await flush()
+    expect(events.filter((e) => e.type === 'done').length).toBe(1)
+  })
 })

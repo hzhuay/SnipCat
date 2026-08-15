@@ -68,6 +68,11 @@ const api = {
 
   cancelJob: (jobId: string): Promise<void> => ipcRenderer.invoke('job:cancel', jobId),
 
+  /** 手动暂停 / 恢复运行中的后台压缩任务 */
+  pauseJob: (jobId: string): Promise<void> => ipcRenderer.invoke('job:pause', jobId),
+
+  resumeJob: (jobId: string): Promise<void> => ipcRenderer.invoke('job:resume', jobId),
+
   /** 后台队列快照（渲染层重载后恢复视图） */
   getQueue: (): Promise<QueueSnapshot> => ipcRenderer.invoke('job:queueSnapshot'),
 

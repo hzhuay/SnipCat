@@ -446,6 +446,8 @@ export function App() {
         <TaskPanel
           tasks={tasks}
           onCancel={(jobId) => void window.api.cancelJob(jobId)}
+          onPause={(jobId) => void window.api.pauseJob(jobId)}
+          onResumeJob={(jobId) => void window.api.resumeJob(jobId)}
           onReveal={(p) => void window.api.reveal(p)}
           onResume={(taskId) => void resumeTask(taskId)}
           onLoad={(taskId) => void loadTaskIntoEditor(taskId)}

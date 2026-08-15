@@ -194,10 +194,12 @@ export class TaskStore {
         break
       case 'paused':
         task.status = 'paused'
+        task.pausedReason = event.reason
         changed = true
         break
       case 'resumed':
         task.status = 'running'
+        task.pausedReason = undefined
         changed = true
         break
       case 'done':

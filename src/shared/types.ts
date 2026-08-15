@@ -176,6 +176,8 @@ export interface TaskState extends PersistedTask {
   ratio: number
   etaSec?: number
   jobId?: string
+  /** 暂停原因（仅 paused 时有效）：前台挂起 / 手动 / 游戏检测 */
+  pausedReason?: 'manual' | 'game' | 'fg'
 }
 
 /** 各切分模式的默认输出后缀（切换模式时若后缀未改过则自动切换） */
@@ -208,7 +210,7 @@ export type JobEvent =
   // 队列调度事件（后台任务 / 前台任务通用）
   | { type: 'queued'; outputPath: string }
   | { type: 'started' }
-  | { type: 'paused' }
+  | { type: 'paused'; reason: 'manual' | 'game' | 'fg' }
   | { type: 'resumed' }
 
 /**
